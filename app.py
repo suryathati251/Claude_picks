@@ -23,7 +23,9 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-FMP_BASE = "https://financialmodelingprep.com/api/v3"
+# FMP stable API base. The legacy /api/v3/ endpoints were deprecated for new accounts
+# after Aug 31, 2025. The stable endpoints take the symbol as a ?symbol= query param.
+FMP_BASE = "https://financialmodelingprep.com/stable"
 
 def get_api_key() -> Optional[str]:
     # Try Streamlit secrets first (production), then env var (local dev)
@@ -34,31 +36,46 @@ def get_api_key() -> Optional[str]:
 
 # ---------------------------------------------------------------------------
 # Data fetch (cached for 15 minutes to stay friendly to FMP free tier)
+# Returns (profile_dict, error_str). On success error_str is None; on failure
+# profile_dict is None and error_str describes the problem.
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=60 * 15, show_spinner=False)
-def fetch_profile(symbol: str, api_key: str) -> Optional[dict]:
+def fetch_profile(symbol: str, api_key: str):
     try:
-        url = f"{FMP_BASE}/profile/{symbol}"
-        r = requests.get(url, params={"apikey": api_key}, timeout=10)
+        url = f"{FMP_BASE}/profile"
+        r = requests.get(url, params={"symbol": symbol, "apikey": api_key}, timeout=10)
         if r.status_code != 200:
-            return None
-        data = r.json()
+            return None, f"HTTP {r.status_code}: {r.text[:200]}"
+        try:
+            data = r.json()
+        except ValueError:
+            return None, f"Non-JSON response: {r.text[:200]}"
+        # FMP sometimes returns an error object with HTTP 200
+        if isinstance(data, dict) and "Error Message" in data:
+            return None, f"FMP error: {data['Error Message'][:300]}"
         if isinstance(data, list) and data:
-            return data[0]
+            return data[0], None
         if isinstance(data, dict) and data.get("symbol"):
-            return data
-        return None
-    except Exception:
-        return None
+            return data, None
+        return None, "Empty response"
+    except requests.exceptions.RequestException as e:
+        return None, f"Network error: {e}"
+    except Exception as e:
+        return None, f"Unexpected error: {e}"
 
-def fetch_all_prices(api_key: str) -> dict:
-    out = {}
+def fetch_all_prices(api_key: str):
+    profiles = {}
+    errors = {}
     progress = st.progress(0.0, text=f"Fetching live prices for {len(WATCHLIST)} tickers...")
     for i, item in enumerate(WATCHLIST):
-        out[item["ticker"]] = fetch_profile(item["ticker"], api_key)
+        data, err = fetch_profile(item["ticker"], api_key)
+        if data:
+            profiles[item["ticker"]] = data
+        if err:
+            errors[item["ticker"]] = err
         progress.progress((i + 1) / len(WATCHLIST), text=f"{i+1}/{len(WATCHLIST)} fetched")
     progress.empty()
-    return out
+    return profiles, errors
 
 # ---------------------------------------------------------------------------
 # Build dataframe
@@ -145,7 +162,19 @@ with col_a:
 with col_b:
     st.caption(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-profiles = fetch_all_prices(api_key)
+profiles, errors = fetch_all_prices(api_key)
+
+# Surface API errors prominently (no more silent failures)
+if errors:
+    unique_msgs = {}
+    for sym, msg in errors.items():
+        unique_msgs.setdefault(msg, []).append(sym)
+    summary = " · ".join(f"{len(syms)} ticker(s): {msg[:120]}" for msg, syms in unique_msgs.items())
+    st.warning(f"⚠️ {len(errors)}/{len(WATCHLIST)} live fetches failed. {summary}")
+    with st.expander("🔍 Show per-ticker fetch errors"):
+        for sym, msg in errors.items():
+            st.code(f"{sym}: {msg}", language=None)
+
 df = build_dataframe(profiles)
 
 # Summary metrics
@@ -265,3 +294,4 @@ with st.expander("ℹ️ Notes & caveats", expanded=False):
   name before acting; the original "undervalued" thesis no longer holds.
 """
     )
+
