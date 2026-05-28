@@ -1,20 +1,19 @@
 """
 Stock Watchlist — Streamlit App
-Live prices via yfinance (free, no API key, no rate limit). Static thesis/targets
-live in watchlist_data.py. Deploy to Streamlit Community Cloud — see README.md.
+Live prices via FMP (stable API). Cache TTL is 24h so we make at most one
+network fetch per ticker per day, well under FMP free tier's 250/day limit.
+Stale-data fallback: if a fetch fails, we keep showing the last good value.
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+import os
 from typing import Optional, Tuple
 
 import pandas as pd
+import requests
 import streamlit as st
-import yfinance as yf
 
 from watchlist_data import WATCHLIST, SECTOR_ORDER
-
-CACHE_TTL_SECONDS = 30 * 60   # 30 minutes — fresh-fetch threshold
-STALE_MAX_HOURS = 24          # how long we'll keep showing stale data before giving up
 
 # ---------------------------------------------------------------------------
 # Config
@@ -26,60 +25,60 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# FMP stable API (legacy /api/v3/ was deprecated for accounts after Aug 31, 2025)
+FMP_BASE = "https://financialmodelingprep.com/stable"
+CACHE_TTL_SECONDS = 24 * 60 * 60   # 24h — one fetch per ticker per day
+STALE_MAX_HOURS = 24 * 7           # keep showing data up to a week if fetches keep failing
+
+def get_api_key() -> Optional[str]:
+    try:
+        return st.secrets["FMP_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        return os.getenv("FMP_API_KEY")
+
 # ---------------------------------------------------------------------------
-# Data fetch
-#
-# We use st.cache_resource to hold a process-level dict of last-good fetches.
-# This dict survives reruns (and most users' sessions) but resets when the
-# Streamlit Cloud container restarts. The pattern:
-#   1. If we have a fresh-enough cached value (< CACHE_TTL_SECONDS), return it.
-#   2. Otherwise try a fresh yfinance fetch. On success, update the cache.
-#   3. On failure, fall back to the last cached value (marked "stale") if any.
-# This means transient yfinance hiccups never leave the UI with blank cells.
+# Data fetch with persistent (process-level) last-good cache
 # ---------------------------------------------------------------------------
 @st.cache_resource
 def get_persistent_store() -> dict:
-    """Process-level dict: ticker -> {data, fetched_at}."""
+    """Process-level dict: ticker -> {data, fetched_at}. Survives reruns;
+    resets on Streamlit Cloud container restart (deploys / idle eviction)."""
     return {}
 
-def _fetch_profile_yf(symbol: str) -> dict:
-    """Raw yfinance fetch — raises on failure."""
-    t = yf.Ticker(symbol)
-    info = t.info or {}
-    price = info.get("currentPrice") or info.get("regularMarketPrice")
-    if price is None:
-        try:
-            fi = t.fast_info
-            price = getattr(fi, "last_price", None)
-        except Exception:
-            pass
-    if price is None:
-        raise ValueError("yfinance returned no price")
-
-    prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose")
-    change_pct = info.get("regularMarketChangePercent")
-    if change_pct is None and prev_close and price:
-        change_pct = ((price - prev_close) / prev_close) * 100
-
-    lo = info.get("fiftyTwoWeekLow")
-    hi = info.get("fiftyTwoWeekHigh")
-    range_str = f"{lo}-{hi}" if (lo is not None and hi is not None) else ""
+def _fetch_profile_fmp(symbol: str, api_key: str) -> dict:
+    """Raw FMP fetch — raises RuntimeError on any failure."""
+    url = f"{FMP_BASE}/profile"
+    r = requests.get(url, params={"symbol": symbol, "apikey": api_key}, timeout=10)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+    try:
+        data = r.json()
+    except ValueError:
+        raise RuntimeError(f"Non-JSON response: {r.text[:200]}")
+    if isinstance(data, dict) and "Error Message" in data:
+        raise RuntimeError(f"FMP: {data['Error Message'][:300]}")
+    if isinstance(data, list) and data:
+        record = data[0]
+    elif isinstance(data, dict) and data.get("symbol"):
+        record = data
+    else:
+        raise RuntimeError("Empty response")
 
     return {
-        "symbol": symbol,
-        "price": price,
-        "changePercentage": change_pct,
-        "marketCap": info.get("marketCap"),
-        "currency": info.get("currency", "USD"),
-        "range": range_str,
+        "symbol": record.get("symbol", symbol),
+        "price": record.get("price"),
+        "changePercentage": record.get("changesPercentage") or record.get("changePercentage"),
+        "marketCap": record.get("mktCap") or record.get("marketCap"),
+        "currency": record.get("currency", "USD"),
+        "range": record.get("range", ""),
     }
 
-def fetch_profile(symbol: str, force_refresh: bool = False) -> Tuple[Optional[dict], Optional[str], Optional[datetime]]:
+def fetch_profile(symbol: str, api_key: str, force_refresh: bool = False) -> Tuple[Optional[dict], Optional[str], Optional[datetime]]:
     """
     Returns (data, warning_or_error, fetched_at).
-    - data: the profile dict (may be stale)
-    - warning_or_error: None on fresh success; a string if data is stale or missing
-    - fetched_at: when the returned data was originally fetched
+    - data: profile dict (may be stale fallback)
+    - warning_or_error: None on fresh success; string when stale or missing
+    - fetched_at: original fetch timestamp of the returned data
     """
     store = get_persistent_store()
     now = datetime.now()
@@ -88,34 +87,29 @@ def fetch_profile(symbol: str, force_refresh: bool = False) -> Tuple[Optional[di
     if cached and not force_refresh:
         age = (now - cached["fetched_at"]).total_seconds()
         if age < CACHE_TTL_SECONDS:
-            # Fresh enough — return cached without hitting network
             return cached["data"], None, cached["fetched_at"]
 
-    # Need a fresh fetch
     try:
-        data = _fetch_profile_yf(symbol)
+        data = _fetch_profile_fmp(symbol, api_key)
         store[symbol] = {"data": data, "fetched_at": now}
         return data, None, now
     except Exception as e:
-        # Fresh fetch failed — fall back to last-good if not too old
         if cached:
             age_h = (now - cached["fetched_at"]).total_seconds() / 3600
             if age_h < STALE_MAX_HOURS:
-                return cached["data"], f"using stale cache ({str(e)[:80]})", cached["fetched_at"]
+                return cached["data"], f"using cache ({str(e)[:80]})", cached["fetched_at"]
         return None, f"no cached value: {str(e)[:200]}", None
 
-def fetch_all_prices(force_refresh: bool = False):
-    profiles = {}
-    fresh = []      # tickers that got a network fetch this turn
-    stale = []      # tickers showing cached data because fresh fetch failed
-    failed = []     # tickers with no data at all
-    fetched_at = {} # ticker -> datetime of the data we're showing
-    errors = {}     # ticker -> error message (for stale or failed)
+def fetch_all_prices(api_key: str, force_refresh: bool = False):
+    profiles, fetched_at, errors = {}, {}, {}
+    fresh, stale, failed = [], [], []
 
-    progress = st.progress(0.0, text=f"Fetching live prices for {len(WATCHLIST)} tickers...")
+    progress = st.progress(0.0, text=f"Fetching prices for {len(WATCHLIST)} tickers...")
     completed = 0
+    # 8 concurrent FMP calls — well within their per-second limits
     with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(fetch_profile, item["ticker"], force_refresh): item["ticker"] for item in WATCHLIST}
+        futures = {executor.submit(fetch_profile, item["ticker"], api_key, force_refresh): item["ticker"]
+                   for item in WATCHLIST}
         for future in as_completed(futures):
             symbol = futures[future]
             try:
@@ -139,7 +133,7 @@ def fetch_all_prices(force_refresh: bool = False):
     return profiles, fetched_at, fresh, stale, failed, errors
 
 # ---------------------------------------------------------------------------
-# Build dataframe
+# Build dataframe / formatting
 # ---------------------------------------------------------------------------
 CURRENCY_SYMBOL = {"USD": "$", "INR": "₹", "JPY": "¥", "EUR": "€", "GBP": "£", "CAD": "C$"}
 
@@ -201,36 +195,42 @@ def build_dataframe(profiles: dict) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 st.title("📈 Stock Watchlist")
 st.caption(
-    f"{len(WATCHLIST)} tickers across {len(SECTOR_ORDER)} sectors. Live prices from yfinance "
-    "(free, no API key). Analyst targets and thesis are static — edit `watchlist_data.py` to update."
+    f"{len(WATCHLIST)} tickers across {len(SECTOR_ORDER)} sectors. "
+    f"Live prices from FMP (cached 24h). Analyst targets and thesis are static — edit `watchlist_data.py`."
 )
 
-# Detect a force-refresh request via session state (set by the button)
+api_key = get_api_key()
+if not api_key:
+    st.error(
+        "Missing FMP API key. Set `FMP_API_KEY` in Streamlit secrets (production) or as "
+        "an environment variable (local). See README.md."
+    )
+    st.stop()
+
 if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
 
 col_a, col_b = st.columns([1, 5])
 with col_a:
-    if st.button("🔄 Refresh prices", use_container_width=True, help="Force a fresh fetch for every ticker"):
+    if st.button("🔄 Force refresh", use_container_width=True,
+                 help="Bypass the 24h cache and fetch all tickers fresh. Costs ~74 FMP requests."):
         st.session_state.force_refresh = True
         st.rerun()
 with col_b:
-    st.caption(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · cache: {CACHE_TTL_SECONDS // 60} min · stale fallback: {STALE_MAX_HOURS}h")
+    st.caption(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · "
+               f"cache: {CACHE_TTL_SECONDS // 3600}h · stale fallback: {STALE_MAX_HOURS // 24}d")
 
 force = st.session_state.force_refresh
-st.session_state.force_refresh = False  # consume the flag
+st.session_state.force_refresh = False
 
-profiles, fetched_at, fresh, stale, failed, errors = fetch_all_prices(force_refresh=force)
+profiles, fetched_at, fresh, stale, failed, errors = fetch_all_prices(api_key, force_refresh=force)
 
-# Fetch-status banner
+# Status banner
 if stale or failed:
     parts = []
-    if fresh:
-        parts.append(f"✅ {len(fresh)} fresh")
-    if stale:
-        parts.append(f"♻️ {len(stale)} stale (showing cached values)")
-    if failed:
-        parts.append(f"❌ {len(failed)} failed (no data)")
+    if fresh: parts.append(f"✅ {len(fresh)} fresh")
+    if stale: parts.append(f"♻️ {len(stale)} stale (showing cached values)")
+    if failed: parts.append(f"❌ {len(failed)} failed (no data)")
     st.warning(" · ".join(parts))
     with st.expander("🔍 Show per-ticker fetch details"):
         if stale:
@@ -246,10 +246,9 @@ if stale or failed:
             for sym in failed:
                 st.code(f"{sym}: {errors.get(sym, 'unknown error')}", language=None)
 elif fresh:
-    st.success(f"✅ All {len(fresh)} tickers loaded fresh.")
+    st.success(f"✅ All {len(fresh)} tickers loaded (some may be from today's cached values).")
 
 df = build_dataframe(profiles)
-# Annotate rows so the dataframe can show staleness
 stale_set = set(stale)
 df["Stale"] = df["Ticker"].isin(stale_set)
 
@@ -304,8 +303,7 @@ def render_display(row):
 display = view.apply(render_display, axis=1)
 
 def color_upside(val: str) -> str:
-    if val == "—":
-        return "color: #6b7280;"
+    if val == "—": return "color: #6b7280;"
     try:
         n = float(val.replace("%", "").replace("+", ""))
     except ValueError:
@@ -316,8 +314,7 @@ def color_upside(val: str) -> str:
     return "color: #6b7280;"
 
 def color_day(val: str) -> str:
-    if val == "—":
-        return "color: #6b7280;"
+    if val == "—": return "color: #6b7280;"
     try:
         n = float(val.replace("%", "").replace("+", ""))
     except ValueError:
@@ -353,16 +350,18 @@ st.download_button(
 
 with st.expander("ℹ️ Notes & caveats", expanded=False):
     st.markdown(
-        """
+        f"""
 - **Not financial advice.** Analyst targets are baked in from public sources at the time
   `watchlist_data.py` was last edited; they don't auto-refresh.
-- **Data source:** yfinance (unofficial Yahoo Finance scraper). Free, no API key, no rate
-  limit — but if Yahoo changes their site, individual fetches may temporarily fail. The
-  error banner above will show exactly which tickers failed if that happens.
-- **Cache:** Prices cache for 30 minutes. Hit **Refresh prices** to force a re-fetch.
-- **Editing the watchlist:** add/remove tickers in `watchlist_data.py`, commit + push,
-  Streamlit Cloud will auto-redeploy.
-- **Negative upside** means the price has run past the static target — re-research that
-  name before acting.
+- **Data source:** Financial Modeling Prep (stable API). Free tier ≈ 250 requests/day.
+- **Cache strategy:** {CACHE_TTL_SECONDS // 3600}h TTL. With {len(WATCHLIST)} tickers, a cold start costs
+  {len(WATCHLIST)} requests — well under the daily limit. The cache lives in the Streamlit Cloud
+  container's memory and resets on deploys / idle eviction.
+- **Force refresh** bypasses the cache and refetches everything (costs {len(WATCHLIST)} requests).
+  Use sparingly.
+- **Stale fallback:** if a fetch fails, we show the last good value (♻️) up to {STALE_MAX_HOURS // 24} days old
+  instead of blanking the row.
+- **Editing the watchlist:** edit `watchlist_data.py`, commit + push.
+- **Negative upside** means the price has run past the static target — re-research before acting.
 """
     )
