@@ -1,66 +1,280 @@
 """
-watchlist_growth.py — ADDITIVE high-growth candidates.
+Static watchlist data — thesis, analyst target, catalyst, risk notes.
+Edit this file to add/remove tickers. Prices are fetched live from FMP.
 
-These are appended to the original WATCHLIST (nothing removed). They're here to
-feed the GROWTH/asymmetric score in fundamentals.py — names with hypergrowth
-*characteristics* (fast revenue growth, scalable margins). They are candidates to
-research, NOT predictions and NOT endorsements. Most high-growth names do not
-10x; some lose most of their value. Size anything from this bucket small.
-
-target is intentionally None for all of these: the screener now ranks on reported
-fundamentals, not analyst price targets, so we don't bake in stale target numbers.
-Duplicates of tickers already in the original WATCHLIST are deliberately omitted.
+Target = None means no credible consensus target was found at research time.
+The Upside column will show "—" for these; thesis text still applies.
 """
 
-GROWTH_WATCHLIST = [
-    # ---- High-growth software / security / data ----
-    {"ticker": "NET", "region": "US", "name": "Cloudflare", "sector": "Hypergrowth", "target": None,
-     "thesis": "Edge network + zero-trust + developer platform; broad usage-based growth runway.",
-     "catalyst": "Workers/AI inference at the edge; large-customer adds", "risk": "Rich multiple; profitability still thin"},
-    {"ticker": "DDOG", "region": "US", "name": "Datadog", "sector": "Hypergrowth", "target": None,
-     "thesis": "Observability platform land-and-expand; many modules per customer.",
-     "catalyst": "New-product attach; AI/LLM observability", "risk": "Consumption model; cloud-spend sensitivity"},
-    {"ticker": "ZS", "region": "US", "name": "Zscaler", "sector": "Hypergrowth", "target": None,
-     "thesis": "Cloud-native zero-trust security; secular shift from legacy appliances.",
-     "catalyst": "Emerging-product ARR; large-deal velocity", "risk": "Competition; valuation"},
-    {"ticker": "MDB", "region": "US", "name": "MongoDB", "sector": "Hypergrowth", "target": None,
-     "thesis": "Developer-favorite document database; Atlas consumption scaling.",
-     "catalyst": "Atlas growth; AI-app workloads", "risk": "Consumption volatility; SBC dilution"},
-    {"ticker": "TTD", "region": "US", "name": "The Trade Desk", "sector": "Hypergrowth", "target": None,
-     "thesis": "Independent demand-side ad platform; CTV/streaming ad-buying tailwind.",
-     "catalyst": "Kokai ramp; CTV ad budgets shifting", "risk": "Ad-cycle sensitivity; execution stumbles"},
-    {"ticker": "IOT", "region": "US", "name": "Samsara", "sector": "Hypergrowth", "target": None,
-     "thesis": "Connected-operations / IoT for physical industries; large untapped base.",
-     "catalyst": "Large-customer ARR; new sensor lines", "risk": "Hardware-attached; macro-cyclical end markets"},
-    {"ticker": "APP", "region": "US", "name": "AppLovin", "sector": "Hypergrowth", "target": None,
-     "thesis": "AI-driven ad engine (AXON) monetizing mobile + expanding beyond gaming.",
-     "catalyst": "Ad-engine expansion to e-commerce/CTV", "risk": "Concentration in ad-tech; volatility"},
+WATCHLIST = [
+    # ============================================================
+    # ORIGINAL 20 (small/mid-cap focused screen)
+    # ============================================================
 
-    # ---- Fintech growth ----
-    {"ticker": "NU", "region": "US", "name": "Nu Holdings", "sector": "Hypergrowth", "target": None,
-     "thesis": "LatAm digital bank scaling members + product depth; profitable growth.",
-     "catalyst": "Mexico/Colombia expansion; ARPU growth", "risk": "EM/currency risk; credit cycle"},
-    {"ticker": "SOFI", "region": "US", "name": "SoFi Technologies", "sector": "Hypergrowth", "target": None,
-     "thesis": "Digital one-stop bank; member + fee-based revenue growth; Rule-of-40 history.",
-     "catalyst": "Fee-income mix shift; member growth", "risk": "High beta (~2.2); credit + rate sensitivity"},
-    {"ticker": "HOOD", "region": "US", "name": "Robinhood", "sector": "Hypergrowth", "target": None,
-     "thesis": "Broadening from brokerage to full financial platform; new revenue lines.",
-     "catalyst": "Crypto/derivatives; new products; ARPU", "risk": "Trading-activity dependent; regulatory"},
-    {"ticker": "MELI", "region": "US", "name": "MercadoLibre", "sector": "Hypergrowth", "target": None,
-     "thesis": "LatAm e-commerce + fintech (Mercado Pago) compounding; long runway.",
-     "catalyst": "Fintech TPV; logistics scale", "risk": "EM/currency; competition from Amazon/Shopee"},
+    # ---- AI / Semiconductors (small/mid) ----
+    {"ticker": "MRVL", "region": "US", "name": "Marvell Technology", "sector": "AI/Semis", "target": 190,
+     "thesis": "AI custom-silicon for hyperscalers. Citi $215 / Stifel $210 target hikes suggest re-rating room.",
+     "catalyst": "Next earnings; hyperscaler capex",
+     "risk": "High beta — falls with any AI-sentiment shock"},
+    {"ticker": "MU", "region": "US", "name": "Micron Technology", "sector": "AI/Semis", "target": 160,
+     "thesis": "WATCH ONLY: Forward-P/E thesis broken at current price after parabolic run.",
+     "catalyst": "HBM3E ramp; DRAM cycle", "risk": "Memory is cyclical — sharp drawdowns possible"},
+    {"ticker": "LRCX", "region": "US", "name": "Lam Research", "sector": "AI/Semis", "target": 315,
+     "thesis": "WFE spend guide raised to $140B. Quality way to play AI capex without single-customer risk.",
+     "catalyst": "WFE cycle; earnings", "risk": "Already up big — less torque from here"},
+    {"ticker": "FORM", "region": "US", "name": "FormFactor", "sector": "AI/Semis", "target": 175,
+     "thesis": "Q1 beat → Craig-Hallum upgrade to Buy/$175. Smaller-cap semi-test exposure.",
+     "catalyst": "Semi-test demand; next earnings", "risk": "Smaller cap, more volatile"},
+    {"ticker": "ORCL", "region": "US", "name": "Oracle (S&P 500)", "sector": "AI/Semis", "target": 260,
+     "thesis": "AI cloud infrastructure pure-play (OCI, Stargate). Off the $345 high, consensus ~$260.",
+     "catalyst": "Cloud revenue acceleration; next earnings", "risk": "Capex-heavy build-out, margin pressure"},
 
-    # ---- Other high-growth profiles the user has touched on ----
-    {"ticker": "ESTC", "region": "US", "name": "Elastic", "sector": "Hypergrowth", "target": None,
-     "thesis": "Search/observability platform; GenAI vector-search relevance.",
-     "catalyst": "Elastic Cloud growth; AI search workloads", "risk": "Competitive search market"},
-    {"ticker": "GRAB", "region": "US", "name": "Grab Holdings", "sector": "Hypergrowth", "target": None,
-     "thesis": "SE-Asia super-app (deliveries + mobility + fintech) approaching scale profitability.",
-     "catalyst": "Adjusted-EBITDA inflection; fintech lending", "risk": "EM/competitive; path-to-GAAP-profit"},
-    {"ticker": "VRT", "region": "US", "name": "Vertiv Holdings", "sector": "Hypergrowth", "target": None,
-     "thesis": "Data-center power & cooling — direct pick-and-shovel on AI capex buildout.",
-     "catalyst": "AI data-center orders/backlog; liquid cooling", "risk": "Cyclical capex; AI-spend dependence"},
-    {"ticker": "RKLB", "region": "US", "name": "Rocket Lab", "sector": "Hypergrowth", "target": None,
-     "thesis": "Small-launch + space-systems; Neutron rocket optionality. Speculative high-beta.",
-     "catalyst": "Neutron first launch; space-systems backlog", "risk": "Pre-scale; cash burn; binary launch risk"},
+    # ---- Biotech (small/mid speculative) ----
+    {"ticker": "NUVL", "region": "US", "name": "Nuvalent", "sector": "Biotech", "target": 138,
+     "thesis": "PDUFA Sept 18, 2026 for zidesamtinib (ROS1 lung cancer). $1.4B cash through 2029.",
+     "catalyst": "FDA decision Sep 18, 2026", "risk": "Binary FDA event — sharp move either way"},
+    {"ticker": "RLAY", "region": "US", "name": "Relay Therapeutics", "sector": "Biotech", "target": 21,
+     "thesis": "12 buys / 0 holds. FDA Breakthrough designation for zovegalisib (PI3Kα).",
+     "catalyst": "ESMO TAT data", "risk": "Clinical-stage — single readout drives stock"},
+    {"ticker": "SDGR", "region": "US", "name": "Schrödinger", "sector": "Biotech", "target": None,
+     "thesis": "Physics+AI drug-discovery platform. Trading near 52-wk low. Lumpy royalty/milestone model.",
+     "catalyst": "Pharma collaboration milestones", "risk": "Royalty model — lumpy revenue"},
+
+    # ---- Energy ----
+    {"ticker": "UEC", "region": "US", "name": "Uranium Energy Corp", "sector": "Energy", "target": 26.75,
+     "thesis": "H.C. Wainwright Buy/$26.75. Cleanest pure-play on nuclear demand (uranium +28% by 2030).",
+     "catalyst": "Uranium spot price; US production restart", "risk": "Speculative, commodity-driven"},
+    {"ticker": "CCJ", "region": "US", "name": "Cameco", "sector": "Energy", "target": None,
+     "thesis": "Higher-quality uranium play vs. UEC; less torque but lower risk.",
+     "catalyst": "Contract pricing cycle", "risk": "Already extended after big move"},
+    {"ticker": "DEC", "region": "US", "name": "Diversified Energy", "sector": "Energy", "target": 22.57,
+     "thesis": "Strong Buy consensus, ~50% upside. Natural gas with dividend yield.",
+     "catalyst": "Henry Hub strength", "risk": "Asset-heavy mature wells — debt risk"},
+    {"ticker": "DVN", "region": "US", "name": "Devon Energy", "sector": "Energy", "target": None,
+     "thesis": "Morningstar's most-undervalued energy name. Permian focus.",
+     "catalyst": "Buybacks; oil price", "risk": "Pure oil-price exposure"},
+    {"ticker": "GRC", "region": "US", "name": "Gorman-Rupp", "sector": "Energy", "target": None,
+     "thesis": "Niche industrial (pumps) riding water infra + AI data-center cooling.",
+     "catalyst": "Order backlog growth", "risk": "Industrial cyclical"},
+
+    # ---- Financials (mid-cap value) ----
+    {"ticker": "BAC", "region": "US", "name": "Bank of America", "sector": "Financials", "target": 65,
+     "thesis": "~11x forward P/E. CFRA $65. Benefits from any rate easing.",
+     "catalyst": "NII inflection; rate cuts", "risk": "Recession would hit credit costs"},
+    {"ticker": "JPM", "region": "US", "name": "JPMorgan Chase", "sector": "Financials", "target": 340,
+     "thesis": "CFRA $340 target. Quality compounder.",
+     "catalyst": "Capital return", "risk": "Lower torque vs. peers"},
+    {"ticker": "TD", "region": "US", "name": "Toronto-Dominion", "sector": "Financials", "target": None,
+     "thesis": "~12x earnings — post-AML-fine rebuild. Cheap vs. Big Six peers.",
+     "catalyst": "Resolution of US regulatory overhang", "risk": "Slow rebuild; regulator-driven"},
+
+    # ---- Consumer / Comm Services (S&P 500 adds) ----
+    {"ticker": "CHTR", "region": "US", "name": "Charter Communications", "sector": "Consumer/Comm", "target": 245,
+     "thesis": "Near 52-wk low after collapse from $422. Consensus ~$245 → ~70% upside.",
+     "catalyst": "Cox merger close; sub trends stabilize",
+     "risk": "Hold rating — fixed-wireless competition"},
+    {"ticker": "GM", "region": "US", "name": "General Motors", "sector": "Consumer/Comm", "target": 96,
+     "thesis": "Forward P/E ~7, cheapest auto in the index. Bull case to $126.",
+     "catalyst": "Q2 earnings; buyback pace; EV strategy", "risk": "Cyclical end-market; China weakness"},
+
+    # ---- International ----
+    {"ticker": "POLYCAB.NS", "region": "IN", "name": "Polycab India", "sector": "Intl", "target": None,
+     "thesis": "Market leader in wires/cables, India infra beneficiary, ~zero debt.",
+     "catalyst": "Capex cycle; Make-in-India", "risk": "INR exposure; mid-cap volatility"},
+    {"ticker": "HMC", "region": "US", "name": "Honda Motor (ADR)", "sector": "Intl", "target": None,
+     "thesis": "USD-listed ADR. Cheap vs. Toyota on multiples; Japan governance reform.",
+     "catalyst": "EV strategy clarity; yen direction", "risk": "China auto market weakness"},
+
+    # ============================================================
+    # ADDITIONS: 50 LARGE-CAP / S&P 500 NAMES WITH ANALYST UPSIDE
+    # Targets are research-based; verify before acting. None = no firm
+    # consensus number was sourced; thesis text still applies.
+    # ============================================================
+
+    # ---- AI / Semis (large-cap) ----
+    {"ticker": "NVDA", "region": "US", "name": "Nvidia", "sector": "AI/Semis", "target": 300,
+     "thesis": "Consensus target ~$297. BofA at $320. Still the dominant AI accelerator franchise.",
+     "catalyst": "Earnings; Blackwell/Rubin ramp", "risk": "Customer concentration; valuation premium"},
+    {"ticker": "AMD", "region": "US", "name": "Advanced Micro Devices", "sector": "AI/Semis", "target": 472,
+     "thesis": "Strong Buy consensus. Avg target $472, high $625. MI accelerator traction.",
+     "catalyst": "MI400 ramp; hyperscaler design wins", "risk": "Distant #2 to Nvidia in AI"},
+    {"ticker": "AVGO", "region": "US", "name": "Broadcom", "sector": "AI/Semis", "target": 480,
+     "thesis": "Consensus $480 (Strong Buy). AI custom silicon + VMware bundle.",
+     "catalyst": "Custom-silicon deals; FY27 AI guide", "risk": "Heavy AI concentration"},
+    {"ticker": "TSM", "region": "US", "name": "TSMC (ADR)", "sector": "AI/Semis", "target": None,
+     "thesis": "Foundry monopoly for leading-edge AI silicon. Picks-and-shovels on every chip.",
+     "catalyst": "3nm/2nm utilization; Arizona ramp", "risk": "Taiwan geopolitical risk"},
+    {"ticker": "ASML", "region": "US", "name": "ASML Holding (ADR)", "sector": "AI/Semis", "target": None,
+     "thesis": "EUV/High-NA monopoly. Every leading-edge chip needs their lithography.",
+     "catalyst": "China policy clarity; orders inflection", "risk": "China revenue exposure"},
+    {"ticker": "AMAT", "region": "US", "name": "Applied Materials", "sector": "AI/Semis", "target": None,
+     "thesis": "Largest semi-equipment vendor. Diversified WFE exposure complements LRCX/KLAC.",
+     "catalyst": "WFE up-cycle; advanced packaging", "risk": "Cyclical; China headwind"},
+    {"ticker": "ARM", "region": "US", "name": "Arm Holdings", "sector": "AI/Semis", "target": None,
+     "thesis": "Royalty model on every Arm chip shipped. Datacenter+AI architecture pivot.",
+     "catalyst": "v9 royalty rates; AI datacenter wins", "risk": "Valuation premium; SoftBank overhang"},
+
+    # ---- Software / Cloud ----
+    {"ticker": "CRM", "region": "US", "name": "Salesforce", "sector": "Software", "target": 269,
+     "thesis": "Consensus $268.87. Agentforce monetization story; off-the-highs entry.",
+     "catalyst": "Agentforce attach rates; FY27 guide", "risk": "Macro-sensitive seat-based pricing"},
+    {"ticker": "NOW", "region": "US", "name": "ServiceNow", "sector": "Software", "target": 236,
+     "thesis": "Bernstein raised target to $236. Best-in-class enterprise software; correction = entry.",
+     "catalyst": "Now Assist AI revenue; renewals", "risk": "High multiple; growth deceleration"},
+    {"ticker": "SNOW", "region": "US", "name": "Snowflake", "sector": "Software", "target": 232,
+     "thesis": "Consensus ~$232. Buy rating from 38 analysts. Data cloud + Cortex AI.",
+     "catalyst": "Consumption growth; AI workload migration", "risk": "Consumption model volatile"},
+    {"ticker": "ADBE", "region": "US", "name": "Adobe", "sector": "Software", "target": None,
+     "thesis": "Creative Cloud + Firefly genAI. De-rated to value-stock multiples in 2025-26.",
+     "catalyst": "Genai monetization; ARR re-acceleration", "risk": "AI disintermediation fears"},
+    {"ticker": "PLTR", "region": "US", "name": "Palantir", "sector": "Software", "target": None,
+     "thesis": "Commercial US growth re-acceleration. Government AI moat.",
+     "catalyst": "US commercial customer adds; AIP traction", "risk": "Valuation extreme; momentum-driven"},
+    {"ticker": "CRWD", "region": "US", "name": "CrowdStrike", "sector": "Software", "target": None,
+     "thesis": "Best-in-class endpoint security; module attach rates rising. Falcon Flex.",
+     "catalyst": "ARR recovery post-2024 outage", "risk": "Competition from Microsoft Defender"},
+    {"ticker": "SHOP", "region": "US", "name": "Shopify", "sector": "Software", "target": None,
+     "thesis": "Merchant solutions GMV scaling; B2B and offline growing fast.",
+     "catalyst": "Take-rate expansion; payments mix", "risk": "Consumer discretionary exposure"},
+
+    # ---- Healthcare / Pharma (large-cap) ----
+    {"ticker": "LLY", "region": "US", "name": "Eli Lilly", "sector": "Healthcare", "target": 1250,
+     "thesis": "GLP-1 franchise (Mounjaro/Zepbound). Median target $1,250 (range $850-$1,500).",
+     "catalyst": "Obesity pipeline data; oral GLP-1", "risk": "GLP-1 competition from Novo, Pfizer pills"},
+    {"ticker": "NVO", "region": "US", "name": "Novo Nordisk (ADR)", "sector": "Healthcare", "target": 70,
+     "thesis": "Morningstar $70 fair value. Anti-obesity pipeline underappreciated post-stock decline.",
+     "catalyst": "CagriSema data; oral semaglutide", "risk": "Wegovy/Ozempic competition; pricing"},
+    {"ticker": "MRK", "region": "US", "name": "Merck", "sector": "Healthcare", "target": 122,
+     "thesis": "Forward P/E 11.7x. CFRA $122. Significantly undervalued by consensus.",
+     "catalyst": "Pipeline data; Keytruda LCM", "risk": "Keytruda patent cliff 2028"},
+    {"ticker": "UNH", "region": "US", "name": "UnitedHealth Group", "sector": "Healthcare", "target": None,
+     "thesis": "Forward P/E 20x with ~+20% consensus upside. Off the lows on cost concerns.",
+     "catalyst": "MLR trajectory; OptumRx contracts", "risk": "Medical cost ratio; regulatory pressure"},
+    {"ticker": "ABT", "region": "US", "name": "Abbott Labs", "sector": "Healthcare", "target": None,
+     "thesis": "Diversified medtech + diagnostics + nutrition. ~+13% consensus upside.",
+     "catalyst": "FreeStyle Libre growth; structural heart", "risk": "Diagnostics post-COVID normalization"},
+    {"ticker": "BMY", "region": "US", "name": "Bristol Myers Squibb", "sector": "Healthcare", "target": None,
+     "thesis": "Trades at 9.9x trailing FCF — third-cheapest healthcare stock in S&P 500.",
+     "catalyst": "Eliquis growth; Cobenfy launch", "risk": "Revlimid LOE pressure"},
+    {"ticker": "JNJ", "region": "US", "name": "Johnson & Johnson", "sector": "Healthcare", "target": None,
+     "thesis": "Defensive dividend-grower; Innovative Medicines (oncology) reaccelerating.",
+     "catalyst": "Stelara biosimilar erosion offset by new launches", "risk": "Talc litigation tail"},
+    {"ticker": "REGN", "region": "US", "name": "Regeneron", "sector": "Healthcare", "target": 840,
+     "thesis": "Consensus $839.78 (Buy, 23 analysts). Eylea HD ramp; Dupixent royalty.",
+     "catalyst": "Lynozyfic launches; pipeline readouts", "risk": "Eylea biosimilar erosion"},
+    {"ticker": "ISRG", "region": "US", "name": "Intuitive Surgical", "sector": "Healthcare", "target": 615,
+     "thesis": "Median target $615.50 (44 analysts). Da Vinci 5 ramp; razor-and-blade model.",
+     "catalyst": "Da Vinci 5 install base; SP platform", "risk": "Premium multiple"},
+    {"ticker": "VRTX", "region": "US", "name": "Vertex Pharmaceuticals", "sector": "Healthcare", "target": None,
+     "thesis": "CF franchise monopoly + Casgevy (gene therapy) + Journavx (non-opioid pain).",
+     "catalyst": "Journavx commercial ramp; pipeline", "risk": "CF franchise concentration"},
+
+    # ---- Mega-Cap Tech ----
+    {"ticker": "AAPL", "region": "US", "name": "Apple", "sector": "Mega-Cap", "target": None,
+     "thesis": "Services growth + Apple Intelligence cycle. Quality compounder.",
+     "catalyst": "iPhone AI upgrade cycle; services margin", "risk": "China revenue exposure"},
+    {"ticker": "MSFT", "region": "US", "name": "Microsoft", "sector": "Mega-Cap", "target": None,
+     "thesis": "Azure AI consumption + Copilot monetization. Best AI platform play.",
+     "catalyst": "Azure AI growth; Copilot seat attach", "risk": "OpenAI relationship; AI capex digestion"},
+    {"ticker": "GOOGL", "region": "US", "name": "Alphabet", "sector": "Mega-Cap", "target": None,
+     "thesis": "Gemini progress + Cloud growth + cheap on P/E vs. peers. Search resilience.",
+     "catalyst": "Gemini moat; cloud profitability", "risk": "Search AI disruption; antitrust"},
+    {"ticker": "META", "region": "US", "name": "Meta Platforms", "sector": "Mega-Cap", "target": None,
+     "thesis": "AI-driven ads ROI compounds; Llama models; Reality Labs losses moderating.",
+     "catalyst": "Ad pricing; AI agents", "risk": "Massive AI capex; Reality Labs burn"},
+    {"ticker": "AMZN", "region": "US", "name": "Amazon", "sector": "Mega-Cap", "target": None,
+     "thesis": "AWS reacceleration + retail margin expansion + advertising growth.",
+     "catalyst": "AWS AI revenue; retail margins", "risk": "AWS share loss to Azure/GCP"},
+    {"ticker": "TSLA", "region": "US", "name": "Tesla", "sector": "Mega-Cap", "target": None,
+     "thesis": "Consensus near current price — robotaxi/Optimus optionality drives bull case.",
+     "catalyst": "Robotaxi rollout; FSD progress", "risk": "Auto margins; key-person risk; valuation"},
+
+    # ---- Industrials / Defense ----
+    {"ticker": "GE", "region": "US", "name": "GE Aerospace", "sector": "Industrials", "target": 400,
+     "thesis": "Morgan Stanley OW with $400 target. Aero services compounder; LEAP fleet aging in.",
+     "catalyst": "Shop visit volume; services margin", "risk": "Commercial aviation cyclicality"},
+    {"ticker": "LMT", "region": "US", "name": "Lockheed Martin", "sector": "Industrials", "target": None,
+     "thesis": "$170B+ backlog; NATO modernization tailwind; hypersonics + missile-defense growth.",
+     "catalyst": "F-35 sustainment; LRDR/PAC-3", "risk": "Defense budget cycle risk"},
+    {"ticker": "RTX", "region": "US", "name": "RTX Corp (Raytheon)", "sector": "Industrials", "target": None,
+     "thesis": "Pratt GTF recovery + Raytheon missile growth. Diversified defense+aero.",
+     "catalyst": "GTF in-shop recovery; munitions backlog", "risk": "GTF cost overruns"},
+    {"ticker": "CAT", "region": "US", "name": "Caterpillar", "sector": "Industrials", "target": None,
+     "thesis": "Nvidia partnership for AI/robotics in heavy industry. Infra cycle exposure.",
+     "catalyst": "Mining capex; data center power gen", "risk": "Construction slowdown"},
+    {"ticker": "HON", "region": "US", "name": "Honeywell", "sector": "Industrials", "target": None,
+     "thesis": "Diversified industrial; benefits across defense + aero + automation themes.",
+     "catalyst": "Quantum spin; aerospace recovery", "risk": "Multi-industrial growth deceleration"},
+    {"ticker": "DE", "region": "US", "name": "Deere & Co", "sector": "Industrials", "target": None,
+     "thesis": "Precision-ag leader; ag-cycle trough behind. Autonomous tractor optionality.",
+     "catalyst": "Ag commodity prices; precision attach", "risk": "Farm income cyclical"},
+
+    # ---- REITs / Utilities ----
+    {"ticker": "EQIX", "region": "US", "name": "Equinix", "sector": "REIT", "target": 965,
+     "thesis": "Consensus $965 (~+20% upside). Data center REIT riding hyperscaler $725B AI capex.",
+     "catalyst": "AFFO guide ($4.20-4.28B); xScale capacity", "risk": "Power-constraint risk; rates"},
+    {"ticker": "DLR", "region": "US", "name": "Digital Realty", "sector": "REIT", "target": None,
+     "thesis": "DB Buy-rated top pick. AI-driven lease renewals + new capacity pipeline.",
+     "catalyst": "AFFO growth; release spreads", "risk": "Rate sensitivity; leverage"},
+    {"ticker": "AMT", "region": "US", "name": "American Tower", "sector": "REIT", "target": None,
+     "thesis": "Cell-tower REIT; 5G densification + data growth. Rate-sensitive but discounted.",
+     "catalyst": "Rate cuts; carrier capex", "risk": "Sprint churn; emerging markets"},
+    {"ticker": "NEE", "region": "US", "name": "NextEra Energy", "sector": "REIT", "target": None,
+     "thesis": "Largest US renewables developer + regulated FPL utility. AI power demand tailwind.",
+     "catalyst": "Data center contracts; renewables backlog", "risk": "Policy/IRA risk; rates"},
+
+    # ---- Financials (expansion) ----
+    {"ticker": "C", "region": "US", "name": "Citigroup", "sector": "Financials", "target": 147,
+     "thesis": "Goldman $151, WF $162. Restructuring story progressing; trades at deep discount to BV.",
+     "catalyst": "Services growth; cost takeout", "risk": "Restructuring execution; credit"},
+    {"ticker": "WFC", "region": "US", "name": "Wells Fargo", "sector": "Financials", "target": 92,
+     "thesis": "Consensus $92.25 (+16% upside). Asset-cap removed; NII inflection.",
+     "catalyst": "NII trajectory; capital return", "risk": "Regulatory tail; commercial real estate"},
+    {"ticker": "GS", "region": "US", "name": "Goldman Sachs", "sector": "Financials", "target": None,
+     "thesis": "IB recovery + strong trading franchise. Private-credit / alts growth.",
+     "catalyst": "M&A pipeline; capital markets activity", "risk": "Volatility-dependent earnings"},
+    {"ticker": "MS", "region": "US", "name": "Morgan Stanley", "sector": "Financials", "target": None,
+     "thesis": "Wealth-management compounder; fee-based AUM grows regardless of cycle.",
+     "catalyst": "Wealth flows; IB recovery", "risk": "Equity market sensitivity"},
+    {"ticker": "V", "region": "US", "name": "Visa", "sector": "Financials", "target": None,
+     "thesis": "Toll-road on global payment volume. Buyback + dividend compounder.",
+     "catalyst": "Cross-border travel; new flows", "risk": "Stablecoin disruption tail"},
+
+    # ---- Energy (large-cap expansion) ----
+    {"ticker": "XOM", "region": "US", "name": "ExxonMobil", "sector": "Energy", "target": None,
+     "thesis": "Disciplined capex + strong FCF + Pioneer acquisition. Best-in-class integrated.",
+     "catalyst": "Permian production; capital return", "risk": "Oil price; energy transition"},
+    {"ticker": "CVX", "region": "US", "name": "Chevron", "sector": "Energy", "target": None,
+     "thesis": "Hess deal closed; TCO ramp; high dividend yield.",
+     "catalyst": "TCO production; Guyana stake", "risk": "Oil price; cost overruns"},
+    {"ticker": "SLB", "region": "US", "name": "Schlumberger", "sector": "Energy", "target": None,
+     "thesis": "Largest oilfield services. International upstream capex recovery + digital.",
+     "catalyst": "International activity; ChampionX deal", "risk": "Pemex receivable; oil price"},
+
+    # ---- Consumer / Comm (large-cap expansion) ----
+    {"ticker": "NFLX", "region": "US", "name": "Netflix", "sector": "Consumer/Comm", "target": 358,
+     "thesis": "Consensus $358. Ad tier monetization + paid-sharing tailwinds compounding.",
+     "catalyst": "Ad ARPU; live events", "risk": "Content cost; competition"},
+    {"ticker": "DIS", "region": "US", "name": "Disney", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Streaming profitability inflection; parks normalization; ESPN flagship launch.",
+     "catalyst": "DTC margins; parks comps", "risk": "Linear erosion; succession"},
+    {"ticker": "NKE", "region": "US", "name": "Nike", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Multi-year turnaround under Hill. Off the lows; innovation pipeline rebuild.",
+     "catalyst": "Wholesale recovery; new product cycle", "risk": "China; share loss to On/Hoka"},
+    {"ticker": "SBUX", "region": "US", "name": "Starbucks", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Niccol turnaround thesis. Off the lows; back-to-Starbucks plan.",
+     "catalyst": "Same-store sales comps; throughput", "risk": "China; turnaround execution"},
+    {"ticker": "MCD", "region": "US", "name": "McDonald's", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Defensive consumer; international franchising; off the highs.",
+     "catalyst": "Value menu traction; international", "risk": "Low-end consumer; commodity costs"},
+    {"ticker": "COST", "region": "US", "name": "Costco", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Membership-fee compounder; international whitespace; defensive growth.",
+     "catalyst": "Membership renewal; fee increase", "risk": "Premium valuation"},
+
+    # ---- AI Infrastructure (existing ORCL) — moved conceptually but keeping in AI/Semis above
+]
+
+SECTOR_ORDER = [
+    "AI/Semis", "Software", "Biotech", "Healthcare", "Energy",
+    "Industrials", "REIT", "Financials", "Mega-Cap", "Consumer/Comm", "Intl",
 ]
