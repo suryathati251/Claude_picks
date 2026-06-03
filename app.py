@@ -372,8 +372,12 @@ df["Stale"] = df["Ticker"].isin(set(stale))
 # Flag any target the sanity guard rejected (the split/stale bug catcher)
 flagged = df[(df["Target"].notna()) & (~df["Target OK"])]
 if len(flagged):
-    names = ", ".join(f"{r.Ticker} (target {r.Target:g} vs 52w high {r._asdict()['52w High']:g})"
-                      for r in flagged.itertuples())
+    def _fmt_flag(row):
+        tgt = row["Target"]
+        hi = row["52w High"]
+        hi_str = f"{hi:g}" if pd.notna(hi) else "n/a"
+        return f"{row['Ticker']} (target {tgt:g} vs 52w high {hi_str})"
+    names = ", ".join(_fmt_flag(row) for _, row in flagged.iterrows())
     st.error(
         f"⚠️ {len(flagged)} static target(s) look implausible vs the live 52-week range and were "
         f"excluded from upside — likely a stock split or stale entry in `watchlist_data.py`: {names}"
