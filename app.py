@@ -20,7 +20,40 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from watchlist_data import WATCHLIST as _BASE_WATCHLIST, SECTOR_ORDER as _BASE_SECTORS
+logging.basicConfig(level=logging.INFO)
+
+# ---------------------------------------------------------------------------
+# Config (must be the first Streamlit call)
+# ---------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Stock Watchlist",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ---------------------------------------------------------------------------
+# Watchlist import — guarded so a bad/stale watchlist_data.py shows a clear
+# message instead of a raw traceback.
+# ---------------------------------------------------------------------------
+try:
+    from watchlist_data import WATCHLIST as _BASE_WATCHLIST, SECTOR_ORDER as _BASE_SECTORS
+except ImportError:
+    try:
+        import watchlist_data as _wd
+        _found = [n for n in dir(_wd) if not n.startswith("_")]
+    except Exception as _e:  # noqa: BLE001
+        _found = [f"(watchlist_data.py failed to import: {_e})"]
+    st.error(
+        "**`watchlist_data.py` is missing `WATCHLIST` / `SECTOR_ORDER`.**\n\n"
+        "The file deployed in this repo imports, but doesn't define those names — so it isn't "
+        "the full watchlist file (it was likely truncated or a different version got committed).\n\n"
+        f"**Names actually found in watchlist_data.py:** `{_found}`\n\n"
+        "**Fix:** re-commit the complete `watchlist_data.py` (the one defining `WATCHLIST = [...]` "
+        "and `SECTOR_ORDER = [...]`), then redeploy."
+    )
+    st.stop()
+
 from watchlist_growth import GROWTH_WATCHLIST
 from fundamentals import (
     fetch_fundamentals,
@@ -36,18 +69,6 @@ import market_risk
 _seen = {item["ticker"] for item in _BASE_WATCHLIST}
 WATCHLIST = _BASE_WATCHLIST + [g for g in GROWTH_WATCHLIST if g["ticker"] not in _seen]
 SECTOR_ORDER = _BASE_SECTORS + [s for s in ["Hypergrowth"] if s not in _BASE_SECTORS]
-
-logging.basicConfig(level=logging.INFO)
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Stock Watchlist",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
 
 # FMP stable API (legacy /api/v3/ was deprecated for accounts after Aug 31, 2025)
 FMP_BASE = "https://financialmodelingprep.com/stable"
@@ -507,3 +528,4 @@ with st.expander("ℹ️ Notes & caveats", expanded=False):
 - **Stale fallback:** failed fetches show the last good value (♻️) up to {STALE_MAX_HOURS // 24} days old.
 """
     )
+
