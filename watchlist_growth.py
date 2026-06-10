@@ -63,4 +63,10 @@ GROWTH_WATCHLIST = [
     {"ticker": "RKLB", "region": "US", "name": "Rocket Lab", "sector": "Hypergrowth", "target": None,
      "thesis": "Small-launch + space-systems; Neutron rocket optionality. Speculative high-beta.",
      "catalyst": "Neutron first launch; space-systems backlog", "risk": "Pre-scale; cash burn; binary launch risk"},
+    {"ticker": "TOST", "region": "US", "name": "Toast", "sector": "Hypergrowth", "target": None,
+     "thesis": "Restaurant-software OS; location growth + payments attach; crossed into GAAP profitability.",
+     "catalyst": "Enterprise/international wins; fintech ARPU", "risk": "Restaurant churn in a downturn; thin margins"},
+    {"ticker": "DUOL", "region": "US", "name": "Duolingo", "sector": "Hypergrowth", "target": None,
+     "thesis": "Category-defining consumer learning app; 40%+ growth with real profits and net cash.",
+     "catalyst": "Max (AI) subscription tier; new subjects", "risk": "Rich multiple; LLMs commoditizing language learning"},
 ]

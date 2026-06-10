@@ -58,9 +58,10 @@ except ImportError:
 from watchlist_growth import GROWTH_WATCHLIST
 from fundamentals import (
     fetch_fundamentals, compute_family_scores, composite_for_lens,
-    target_is_sane, has_any, FMPRateLimitError,
-    FAMILIES, LENSES, DEFAULT_LENS,
+    compute_flags, target_is_sane, has_any, FMPRateLimitError,
+    FAMILIES, LENSES, DEFAULT_LENS, CALLS_PER_TICKER,
 )
+from yahoo_fallback import fetch_quotes_yahoo, fetch_fundamentals_yahoo, HAVE_YF
 import market_risk
 
 _seen = {item["ticker"] for item in _BASE_WATCHLIST}
@@ -75,10 +76,15 @@ FAM_ABBR = {"Value": "V", "Quality": "Q", "Growth": "G", "Momentum": "M", "Safet
 FMP_BASE = "https://financialmodelingprep.com/stable"
 QUOTE_TTL = 6 * 60 * 60
 FUND_TTL = 14 * 24 * 60 * 60
+YF_FUND_TTL = 3 * 24 * 60 * 60   # Yahoo-sourced fundamentals expire sooner so FMP can replace them
 MARKET_TTL = 6 * 60 * 60
 
-_DEFAULT_BUDGET = min(len(WATCHLIST), 110)
+# Budget is in TICKERS per refresh; each ticker costs CALLS_PER_TICKER FMP calls.
+# Default keeps one full refresh comfortably inside the 250-calls/day free tier
+# (70 × 3 = 210, plus a handful of quote/market calls).
+_DEFAULT_BUDGET = min(len(WATCHLIST), max(10, (250 - 10) // CALLS_PER_TICKER))
 FUND_BUDGET = int(os.getenv("FMP_FUND_BUDGET", str(_DEFAULT_BUDGET)))
+YF_BUDGET = int(os.getenv("YF_FUND_BUDGET", "60"))  # Yahoo fallback fills per run
 BATCH_SIZE = 50
 MAX_WORKERS = 3
 
@@ -135,6 +141,12 @@ def fund_store(): return PersistentStore(os.path.join(_cache_dir(), "fundamental
 
 
 def _fresh(entry, ttl): return bool(entry) and (time.time() - entry.get("ts", 0)) < ttl
+
+
+def _fund_fresh(entry):
+    """Yahoo-sourced entries use a shorter TTL so FMP data replaces them sooner."""
+    ttl = YF_FUND_TTL if (entry or {}).get("src") == "yahoo" else FUND_TTL
+    return _fresh(entry, ttl)
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +248,18 @@ def fetch_quotes(api_key, symbols, force):
                             got[sym] = _norm_quote(row)
         except FMPRateLimitError:
             rate_limited = True
+        except requests.RequestException as e:
+            logger.warning("FMP quote fetch failed (%s) — will try Yahoo fallback", str(e)[:120])
         for sym, d in got.items():
             store.set(sym, {"data": d, "ts": now}); quotes[sym] = d; fetched += 1
+
+        # Yahoo fallback: any symbol STILL without a price (FMP quota spent,
+        # plan doesn't include it, etc.) gets filled keylessly and cached.
+        missing = [s for s in need if (quotes.get(s) or {}).get("price") is None]
+        if missing and HAVE_YF:
+            for sym, d in fetch_quotes_yahoo(missing).items():
+                store.set(sym, {"data": d, "ts": now, "src": "yahoo"})
+                quotes[sym] = d; fetched += 1
         store.flush()
     return quotes, fetched, from_cache, rate_limited
 
@@ -255,7 +277,7 @@ def fetch_fundamentals_all(api_key, symbols, market_caps, force):
         e = store.get(s)
         if e:
             funds[s] = e["data"]
-        if force or not _fresh(e, FUND_TTL):
+        if force or not _fund_fresh(e):
             candidates.append((e.get("ts", 0.0) if e else 0.0, s))
 
     candidates.sort(key=lambda kv: kv[0])
@@ -287,6 +309,22 @@ def fetch_fundamentals_all(api_key, symbols, market_caps, force):
                         store.set(sym, {"data": res, "ts": now})
                         funds[sym] = res
                         refreshed += 1
+        store.flush()
+
+    # ---- Yahoo fallback: fill tickers FMP couldn't deliver (quota, plan) ----
+    yahoo_missing = [s for s in symbols
+                     if s not in funds or not has_any(funds.get(s) or {})]
+    if yahoo_missing and HAVE_YF:
+        def yf_work(sym):
+            return sym, fetch_fundamentals_yahoo(sym)
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futs = [ex.submit(yf_work, s) for s in yahoo_missing[:YF_BUDGET]]
+            for fut in as_completed(futs):
+                sym, res = fut.result()
+                if res and has_any(res):
+                    store.set(sym, {"data": res, "ts": now, "src": "yahoo"})
+                    funds[sym] = res
+                    refreshed += 1
         store.flush()
 
     pending = [s for s in symbols if s not in funds]
@@ -344,6 +382,8 @@ def build_dataframe(quotes, fundamentals, fam_scores) -> pd.DataFrame:
             s = (fs.get(fam) or {}).get("score")
             return s * 100 if s is not None else None
 
+        flag_adj, flag_list = compute_flags(fund)
+
         rows.append({
             "Ticker": tk, "Region": item["region"], "Name": item["name"], "Sector": item["sector"],
             "Price": price, "Day %": q.get("changePercentage"),
@@ -358,6 +398,9 @@ def build_dataframe(quotes, fundamentals, fam_scores) -> pd.DataFrame:
             "Rev Growth %": pct("rev_growth"), "Gross Mgn %": pct("gross_margin"),
             "Rule40": fund.get("rule_of_40"), "FCF Yld %": pct("fcf_yield"),
             "Safety %": pct("safety"),
+            "P/S": fund.get("ps_ratio"), "PEG": fund.get("peg"),
+            "D/E": fund.get("debt_equity"),
+            "FlagAdj": flag_adj, "Flags": " · ".join(flag_list) if flag_list else "",
             "Target": target, "Target OK": target_ok, "Upside %": upside,
             "Thesis": item["thesis"],
         })
@@ -370,8 +413,11 @@ def build_dataframe(quotes, fundamentals, fam_scores) -> pd.DataFrame:
 st.title("📈 Stock Watchlist")
 st.caption(
     f"{len(WATCHLIST)} tickers, {len(SECTOR_ORDER)} sectors. Scored on five **sector-neutral** factor "
-    f"families — Value · Quality · Growth · Momentum · Safety — blended by the lens you pick. "
-    f"Live data from FMP (batched quotes + 14-day fundamentals cache to stay inside the free tier)."
+    f"families — Value · Quality · Growth · Momentum · Safety — blended by the lens you pick, then "
+    f"adjusted by absolute red/green flags (debt, falling revenue, PEG, net cash). "
+    f"Data: FMP first (cached to stay inside the free tier)"
+    + (", Yahoo Finance fills anything FMP can't deliver — no more empty cells." if HAVE_YF
+       else ". Install `yfinance` to auto-fill cells when the FMP quota is hit.")
 )
 
 api_key = get_api_key()
@@ -423,6 +469,20 @@ for s in SYMBOLS:
         f["mom_52w"] = (price - lo) / (hi - lo)          # 0..1 position in 52w range
     if price and ma200:
         f["mom_ma200"] = price / ma200 - 1               # trend vs 200-day average
+    # PEG fallback from the quote's P/E + statement EPS growth (both must be > 0).
+    eg = f.get("eps_growth")
+    if f.get("peg") is None and pe and pe > 0 and eg and eg > 0:
+        f["peg"] = pe / (eg * 100.0)
+    # Safety fallback for Yahoo-sourced rows (no 2-year statement history there):
+    if f.get("safety") is None:
+        checks = []
+        for key, ok in (("net_margin", lambda v: v > 0), ("operating_margin", lambda v: v > 0),
+                        ("fcf_yield", lambda v: v > 0), ("rev_growth", lambda v: v > 0)):
+            v = f.get(key)
+            if v is not None:
+                checks.append(ok(v))
+        if checks:
+            f["safety"] = sum(1 for c in checks if c) / len(checks)
 
 fam_scores = compute_family_scores(fundamentals, SECTORS)
 
@@ -451,8 +511,10 @@ st.divider()
 # ---------------------------------------------------------------------------
 n = len(SYMBOLS)
 if q_rl or f_rl or mkt.get("rate_limited"):
+    extra = ("Yahoo Finance fallback filled the gaps where possible." if HAVE_YF
+             else "Install `yfinance` to auto-fill gaps when this happens.")
     st.warning(f"⏳ **FMP quota reached** — showing cached values. {f_loaded}/{n} tickers have fundamentals; "
-               f"**{len(f_pending)} pending** will fill once the daily quota resets.")
+               f"**{len(f_pending)} pending**. {extra}")
 elif f_pending:
     st.info(f"📊 Fundamentals: **{f_loaded}/{n} loaded** ({f_refreshed} this load) · **{len(f_pending)} pending**. "
             f"Click **Fetch more fundamentals** to pull the next batch — then they stay cached {FUND_TTL//86400} days.")
@@ -489,7 +551,8 @@ with fcol2:
 
 view = df[df["Sector"].isin(selected_sectors)].copy() if selected_sectors else df.copy()
 
-# Composite Score for the chosen lens = weighted mean of the family sub-scores present.
+# Composite Score for the chosen lens = weighted mean of the family sub-scores
+# present, then adjusted by the absolute red/green flags (clipped to 0–100).
 weights = LENSES[rank_mode]
 def _composite(row):
     num = den = 0.0; present = 0
@@ -497,8 +560,10 @@ def _composite(row):
         v = row[FAM_ABBR[fam]]
         if pd.notna(v):
             num += w * v; den += w; present += 1
-    return pd.Series({"Score": (num / den) if den > 0 else float("nan"),
-                      "Cov": present, "CovN": len(weights)})
+    base = (num / den) if den > 0 else float("nan")
+    adj = row["FlagAdj"] if pd.notna(row.get("FlagAdj", float("nan"))) else 0.0
+    score = min(100.0, max(0.0, base + adj)) if pd.notna(base) else base
+    return pd.Series({"Score": score, "Cov": present, "CovN": len(weights)})
 
 view[["Score", "Cov", "CovN"]] = view.apply(_composite, axis=1)
 view = view.sort_values("Score", ascending=False, na_position="last")
@@ -542,6 +607,10 @@ def render_display(row):
         "Rev Grw": f"{row['Rev Growth %']:+.1f}%" if pd.notna(row["Rev Growth %"]) else "—",
         "Gross Mgn": f"{row['Gross Mgn %']:.0f}%" if pd.notna(row["Gross Mgn %"]) else "—",
         "FCF Yld": f"{row['FCF Yld %']:.1f}%" if pd.notna(row["FCF Yld %"]) else "—",
+        "P/S": f"{row['P/S']:.1f}" if pd.notna(row["P/S"]) else "—",
+        "PEG": f"{row['PEG']:.2f}" if pd.notna(row["PEG"]) else "—",
+        "D/E": f"{row['D/E']:.2f}" if pd.notna(row["D/E"]) else "—",
+        "Flags": row["Flags"] if row["Flags"] else "—",
         "52w": f"{row['52w Pos %']:.0f}%" if pd.notna(row["52w Pos %"]) else "—",
         "Mkt Cap": fmt_mcap(row["Mkt Cap"], row["Currency"]),
         "Target": target_str,
@@ -582,6 +651,7 @@ st.dataframe(
     styler, use_container_width=True, hide_index=True,
     height=min(60 + 36 * len(display), 900),
     column_config={"Thesis": st.column_config.TextColumn(width="large"),
+                   "Flags": st.column_config.TextColumn(width="medium"),
                    "Name": st.column_config.TextColumn(width="medium")},
 )
 
@@ -595,16 +665,27 @@ with st.expander("ℹ️ How the score works & caveats", expanded=False):
         f"""
 **Five sub-scores, each 0–100 (percentile vs peers):**
 
-- **V — Value:** earnings yield + FCF yield (cheapness).
+- **V — Value:** earnings yield + FCF yield + **low P/S** + **low PEG** (cheapness, growth-adjusted).
 - **Q — Quality:** ROIC + gross margin + operating margin (profitability / returns on capital).
-- **G — Growth:** revenue growth + Rule-of-40.
+- **G — Growth:** revenue growth + EPS growth + Rule-of-40.
 - **M — Momentum:** position in the 52-week range + price vs the 200-day average (free from the quote).
-- **S — Safety:** a Piotroski-style health check (profitable, cash-generative, growing, margins improving).
+- **S — Safety:** Piotroski-style health check + **low debt/equity** + **low net-debt/EBITDA** + interest coverage.
 
 **Logic:** each metric is percentile-ranked **within its sector** (so a bank ranks against banks, not against
 software), then equal-weighted into its family. The headline **Score** blends families per the **lens** you
 pick — equal weights on purpose, since tuned weights overfit. Sub-scores renormalize over only the metrics a
 ticker actually has; **Cov** shows how many of the lens's families were available.
+
+**Flags (absolute checks, applied on top of the relative ranks):** percentiles only say "better than peers" —
+flags catch what's bad or great in absolute terms. Red flags subtract points: falling revenue (−6 to −12),
+D/E > 1 or 2 (−4/−8), net debt > 3–4× EBITDA (−4/−8), interest coverage < 2× (−6), negative FCF (−5),
+unprofitable (−4), and high-debt-plus-falling-revenue (−5, the classic value trap). Green flags add points:
+PEG < 1 (+6), P/S < 2 with growing revenue (+4), ROIC > 20% (+5), net cash (+4). Capped at −25/+15.
+
+**Why QARP is the default lens:** cheapness alone finds value traps (cheap because dying); quality alone
+overpays. The most evidence-backed simple recipe — Greenblatt's Magic Formula and the academic
+quality-minus-junk literature — is to demand **both**: high earnings/FCF yield AND high ROIC, with a clean
+balance sheet. QARP = Value 1.0 × Quality 1.0 × Safety 0.75 × Growth 0.25, flag-adjusted.
 
 **Caveats.**
 - Not financial advice. This ranks **past reported data** — factor premia are real but noisy and can
@@ -612,7 +693,9 @@ ticker actually has; **Cov** shows how many of the lens's families were availabl
 - **Banks / REITs:** sector-neutral ranking compares them fairly to peers, but ROIC/FCF-yield are imperfect for
   them — read those rows with extra care.
 - **Thin sectors** (fewer than {5} rated names) fall back to whole-universe ranking.
-- **Free-tier budget:** prices = 1 batch call; fundamentals cached {FUND_TTL//86400}d, ≤{FUND_BUDGET}
-  refreshed per load, stopping on "Limit Reach". Momentum & Safety add **no** API calls.
+- **Free-tier budget:** prices = 1 batch call; fundamentals = {CALLS_PER_TICKER} calls/ticker, cached
+  {FUND_TTL//86400}d, ≤{FUND_BUDGET} tickers refreshed per load, stopping on "Limit Reach".
+  Momentum adds **no** API calls. Anything FMP can't deliver is filled from **Yahoo Finance**
+  (keyless, cached {YF_FUND_TTL//86400}d so FMP data replaces it when quota allows).
 """
     )

@@ -272,6 +272,56 @@ WATCHLIST = [
      "catalyst": "Membership renewal; fee increase", "risk": "Premium valuation"},
 
     # ---- AI Infrastructure (existing ORCL) — moved conceptually but keeping in AI/Semis above
+
+    # ============================================================
+    # ADDITIONS: UNDERVALUED-QUALITY (QARP) CANDIDATES
+    # Picked for the QARP lens: reasonable multiples + high returns on
+    # capital + clean balance sheets. target=None on purpose — the
+    # screener ranks on reported fundamentals, not stale analyst numbers.
+    # ============================================================
+
+    # ---- AI / Semis ----
+    {"ticker": "QCOM", "region": "US", "name": "Qualcomm", "sector": "AI/Semis", "target": None,
+     "thesis": "Cheapest large-cap semi on P/E; strong FCF; diversifying into auto/IoT/PC beyond handsets.",
+     "catalyst": "Snapdragon PC ramp; auto design-win backlog", "risk": "Apple modem in-sourcing; handset cyclicality"},
+    {"ticker": "ANET", "region": "US", "name": "Arista Networks", "sector": "AI/Semis", "target": None,
+     "thesis": "AI data-center networking leader; net-cash balance sheet, high ROIC, hyperscaler spend tailwind.",
+     "catalyst": "800G adoption; AI back-end network wins", "risk": "Customer concentration (META/MSFT); white-box competition"},
+
+    # ---- Healthcare ----
+    {"ticker": "GILD", "region": "US", "name": "Gilead Sciences", "sector": "Healthcare", "target": None,
+     "thesis": "Low-teens P/E, big FCF yield, durable HIV franchise; lenacapavir prevention launch optionality.",
+     "catalyst": "Lenacapavir uptake; oncology pipeline", "risk": "HIV LOE tail; pipeline execution"},
+
+    # ---- Financials ----
+    {"ticker": "BRK-B", "region": "US", "name": "Berkshire Hathaway B", "sector": "Financials", "target": None,
+     "thesis": "Quality compounder at a reasonable multiple; record cash pile = downside cushion + optionality.",
+     "catalyst": "Cash deployment; buybacks below intrinsic value", "risk": "Post-Buffett transition; size limits returns"},
+    {"ticker": "AXP", "region": "US", "name": "American Express", "sector": "Financials", "target": None,
+     "thesis": "Premium-customer closed-loop network; high ROE; younger cohort growth; reasonable P/E.",
+     "catalyst": "Fee-paying card growth; credit normalization", "risk": "Consumer spending downturn hits billings"},
+    {"ticker": "PGR", "region": "US", "name": "Progressive", "sector": "Financials", "target": None,
+     "thesis": "Best-in-class auto insurer (telematics moat); consistent underwriting profit + policy growth.",
+     "catalyst": "Policies-in-force growth; margin in combined ratio", "risk": "Catastrophe losses; pricing cycle turns"},
+    {"ticker": "PYPL", "region": "US", "name": "PayPal", "sector": "Financials", "target": None,
+     "thesis": "Deep-value fintech: ~10x FCF with massive buybacks; branded-checkout stabilization is the swing factor.",
+     "catalyst": "Branded TPV growth; Venmo monetization", "risk": "Share loss to Apple Pay / Shop Pay continues"},
+
+    # ---- Consumer / Comm ----
+    {"ticker": "UBER", "region": "US", "name": "Uber Technologies", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Network-effect platform turned FCF machine; GAAP-profitable with buybacks; AV partnerships optionality.",
+     "catalyst": "Bookings growth; AV partner rollouts", "risk": "Robotaxi disintermediation narrative; regulation"},
+    {"ticker": "BKNG", "region": "US", "name": "Booking Holdings", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Travel-booking toll road: high margins, huge buybacks, agency model needs little capital.",
+     "catalyst": "Connected-trip attach; alternative accommodations", "risk": "Google/AI travel search disintermediation"},
+    {"ticker": "CMCSA", "region": "US", "name": "Comcast", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Single-digit P/E, large FCF, Epic Universe + broadband ARPU offsetting sub losses. Deep value.",
+     "catalyst": "Parks ramp; broadband ARPU; cable spin value", "risk": "Broadband sub erosion accelerates (FWA)"},
+
+    # ---- Industrials ----
+    {"ticker": "UNP", "region": "US", "name": "Union Pacific", "sector": "Industrials", "target": None,
+     "thesis": "Western-rail duopoly; pricing power + buybacks; valuation reset from premium to market multiple.",
+     "catalyst": "Volume recovery; operating-ratio improvement", "risk": "Freight recession; regulatory/merger noise"},
 ]
 
 SECTOR_ORDER = [
