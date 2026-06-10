@@ -69,4 +69,40 @@ GROWTH_WATCHLIST = [
     {"ticker": "DUOL", "region": "US", "name": "Duolingo", "sector": "Hypergrowth", "target": None,
      "thesis": "Category-defining consumer learning app; 40%+ growth with real profits and net cash.",
      "catalyst": "Max (AI) subscription tier; new subjects", "risk": "Rich multiple; LLMs commoditizing language learning"},
+
+    # ---- AI infrastructure / neoclouds (fastest top-line growth in the market) ----
+    {"ticker": "CRWV", "region": "US", "name": "CoreWeave", "sector": "Hypergrowth", "target": None,
+     "thesis": "AI neocloud; ~140%+ revenue growth, multi-year hyperscaler/AI-lab contracts; street sees ~$23B sales by 2027.",
+     "catalyst": "New data-center capacity; contract backlog growth", "risk": "Heavy debt-funded capex; customer concentration; GPU depreciation"},
+    {"ticker": "NBIS", "region": "US", "name": "Nebius Group", "sector": "Hypergrowth", "target": None,
+     "thesis": "AI neocloud scaling from ~$1.25B to a guided $7–9B run-rate in 2026; triple-digit growth.",
+     "catalyst": "Data-center buildout; large AI customer wins", "risk": "Execution on extreme scale-up; capex intensity; competition"},
+    {"ticker": "ALAB", "region": "US", "name": "Astera Labs", "sector": "Hypergrowth", "target": None,
+     "thesis": "AI connectivity silicon (PCIe/CXL retimers, Scorpio switches); ~90% revenue growth, S&P 500 candidate.",
+     "catalyst": "Scorpio ramp with next-gen accelerators", "risk": "Rich multiple; hyperscaler design-win concentration"},
+    {"ticker": "CRDO", "region": "US", "name": "Credo Technology", "sector": "Hypergrowth", "target": None,
+     "thesis": "AI data-center connectivity (AECs/SerDes); ~150% revenue growth riding back-end network buildout.",
+     "catalyst": "New hyperscaler qualifications; 800G/1.6T cycles", "risk": "Customer concentration; AI-capex sensitivity"},
+
+    # ---- Consumer internet / platforms ----
+    {"ticker": "RDDT", "region": "US", "name": "Reddit", "sector": "Hypergrowth", "target": None,
+     "thesis": "~70% ad-revenue growth; unique content moat increasingly licensed for AI training; S&P 500 candidate.",
+     "catalyst": "Ad-platform improvements; AI data-licensing deals", "risk": "Google-search traffic dependence; engagement volatility"},
+    {"ticker": "HIMS", "region": "US", "name": "Hims & Hers Health", "sector": "Hypergrowth", "target": None,
+     "thesis": "DTC telehealth compounding subscribers across categories (weight loss, dermatology, mental health).",
+     "catalyst": "GLP-1 offering scale; new specialty launches", "risk": "Regulatory (compounded GLP-1s); marketing-spend dependence"},
+    {"ticker": "CAVA", "region": "US", "name": "CAVA Group", "sector": "Hypergrowth", "target": None,
+     "thesis": "Fast-casual Mediterranean chain in early national rollout; strong unit economics, Chipotle-playbook story.",
+     "catalyst": "New-store openings; same-store sales comps", "risk": "Restaurant multiple compression; consumer slowdown"},
+
+    # ---- Data / security / health-AI ----
+    {"ticker": "RBRK", "region": "US", "name": "Rubrik", "sector": "Hypergrowth", "target": None,
+     "thesis": "Cyber-resilience / data-security platform; high-40s% ARR growth as ransomware recovery becomes board-level spend.",
+     "catalyst": "Large-enterprise wins; security-suite expansion", "risk": "Competitive backup/security market; SBC dilution"},
+    {"ticker": "TEM", "region": "US", "name": "Tempus AI", "sector": "Hypergrowth", "target": None,
+     "thesis": "AI precision-medicine platform (genomics + clinical data); insurance coverage expanding.",
+     "catalyst": "Genomics volume growth; data-licensing deals", "risk": "Path to profitability; reimbursement risk"},
+    {"ticker": "AXON", "region": "US", "name": "Axon Enterprise", "sector": "Hypergrowth", "target": None,
+     "thesis": "Public-safety platform (Taser, body cams, evidence cloud, drones); ~30% compounder with deep moat.",
+     "catalyst": "AI evidence tools; federal/international expansion", "risk": "Premium valuation; municipal budget cycles"},
 ]
