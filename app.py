@@ -316,8 +316,8 @@ def fetch_fundamentals_all(api_key, symbols, market_caps, force):
                      if s not in funds or not has_any(funds.get(s) or {})]
     if yahoo_missing and HAVE_YF:
         def yf_work(sym):
-            return sym, fetch_fundamentals_yahoo(sym)
-        with ThreadPoolExecutor(max_workers=4) as ex:
+            return sym, fetch_fundamentals_yahoo(sym, market_caps.get(sym))
+        with ThreadPoolExecutor(max_workers=2) as ex:
             futs = [ex.submit(yf_work, s) for s in yahoo_missing[:YF_BUDGET]]
             for fut in as_completed(futs):
                 sym, res = fut.result()
@@ -430,11 +430,11 @@ if "force_refresh" not in st.session_state:
 
 col_a, col_b, col_c = st.columns([1.2, 1.4, 4])
 with col_a:
-    if st.button("🔄 Refresh prices", use_container_width=True,
+    if st.button("🔄 Refresh prices", width="stretch",
                  help="Refetch live prices now (1–2 API calls). Fundamentals use the 14-day cache."):
         st.session_state.force_refresh = "prices"; st.rerun()
 with col_b:
-    if st.button("📊 Fetch more fundamentals", use_container_width=True,
+    if st.button("📊 Fetch more fundamentals", width="stretch",
                  help=f"Pull the next {FUND_BUDGET} tickers' fundamentals into the cache."):
         st.session_state.force_refresh = "funds"; st.rerun()
 with col_c:
@@ -648,7 +648,7 @@ for c in ["Score", "V", "Q", "G", "M", "S"]:
 styler = styler.map(color_signed, subset=["Day %"]).map(color_signed, subset=["Rev Grw"])
 
 st.dataframe(
-    styler, use_container_width=True, hide_index=True,
+    styler, width="stretch", hide_index=True,
     height=min(60 + 36 * len(display), 900),
     column_config={"Thesis": st.column_config.TextColumn(width="large"),
                    "Flags": st.column_config.TextColumn(width="medium"),

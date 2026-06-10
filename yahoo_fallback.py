@@ -102,82 +102,154 @@ def fetch_quotes_yahoo(symbols: list[str]) -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
-# Fundamentals
+# Fundamentals — statement-based (NOT .info)
 # ---------------------------------------------------------------------------
-def fetch_fundamentals_yahoo(symbol: str) -> Optional[dict]:
-    """Map Yahoo's ``.info`` onto fundamentals.py's metric keys.
+# Yahoo's quoteSummary endpoint (behind ``Ticker.info``) requires cookie/crumb
+# auth and 401s / rate-limits cloud-provider IPs (e.g. Streamlit Cloud). The
+# fundamentals-timeseries endpoint behind ``income_stmt`` / ``balance_sheet`` /
+# ``cashflow`` does not, so we derive everything from raw statements — the same
+# approach fundamentals.py uses with FMP.
+
+def _row(df, *names) -> Optional[float]:
+    """Get the most-recent value for the first matching row label.
+    Matches case/space-insensitively so 'Total Revenue'/'TotalRevenue' both work."""
+    if df is None or getattr(df, "empty", True):
+        return None
+    norm = {str(idx).replace(" ", "").lower(): idx for idx in df.index}
+    for name in names:
+        idx = norm.get(name.replace(" ", "").lower())
+        if idx is None:
+            continue
+        series = df.loc[idx].dropna()
+        if len(series):
+            return _f(series.iloc[0])
+    return None
+
+
+def _row_prev(df, *names) -> Optional[float]:
+    """Like _row but the SECOND most-recent value (prior fiscal year)."""
+    if df is None or getattr(df, "empty", True):
+        return None
+    norm = {str(idx).replace(" ", "").lower(): idx for idx in df.index}
+    for name in names:
+        idx = norm.get(name.replace(" ", "").lower())
+        if idx is None:
+            continue
+        series = df.loc[idx].dropna()
+        if len(series) >= 2:
+            return _f(series.iloc[1])
+    return None
+
+
+def fetch_fundamentals_yahoo(symbol: str, market_cap: Optional[float] = None) -> Optional[dict]:
+    """Build fundamentals.py's metric dict from Yahoo annual statements.
     Returns None on total failure; otherwise a dict (values may be None)."""
     if not HAVE_YF:
         return None
     try:
-        info = yf.Ticker(symbol).info or {}
+        ti = yf.Ticker(symbol)
+        inc = ti.income_stmt        # annual income statement
+        bs = ti.balance_sheet       # annual balance sheet
+        cf = ti.cashflow            # annual cash-flow statement
     except Exception as e:  # noqa: BLE001
-        logger.warning("%s: yahoo info failed: %s", symbol, str(e)[:120])
+        logger.warning("%s: yahoo statements failed: %s", symbol, str(e)[:120])
         return None
-    if not info or len(info) < 5:
-        # Yahoo sometimes returns a near-empty shell; treat as a miss.
+    if (inc is None or getattr(inc, "empty", True)) and (bs is None or getattr(bs, "empty", True)):
         return None
 
-    mcap = _f(info.get("marketCap"))
-    rev = _f(info.get("totalRevenue"))
-    fcf = _f(info.get("freeCashflow"))
-    ebitda = _f(info.get("ebitda"))
-    total_debt = _f(info.get("totalDebt"))
-    total_cash = _f(info.get("totalCash"))
-    pe = _f(info.get("trailingPE"))
-    eps_g = _f(info.get("earningsGrowth"))     # fraction, e.g. 0.12
-    rev_g = _f(info.get("revenueGrowth"))      # fraction
-    op_m = _f(info.get("operatingMargins"))
-    gross_m = _f(info.get("grossMargins"))
-    net_m = _f(info.get("profitMargins"))
+    if market_cap is None:
+        try:
+            market_cap = _f(getattr(ti.fast_info, "market_cap", None))
+        except Exception:  # noqa: BLE001
+            market_cap = None
+
+    rev = _row(inc, "Total Revenue", "TotalRevenue", "Operating Revenue")
+    gp = _row(inc, "Gross Profit")
+    opi = _row(inc, "Operating Income", "EBIT")
+    ni = _row(inc, "Net Income", "Net Income Common Stockholders")
+    ebitda = _row(inc, "EBITDA", "Normalized EBITDA")
+    int_exp = _row(inc, "Interest Expense")
+    prev_rev = _row_prev(inc, "Total Revenue", "TotalRevenue", "Operating Revenue")
+    prev_ni = _row_prev(inc, "Net Income", "Net Income Common Stockholders")
+    prev_gp = _row_prev(inc, "Gross Profit")
+    prev_opi = _row_prev(inc, "Operating Income", "EBIT")
+
+    total_debt = _row(bs, "Total Debt")
+    if total_debt is None:
+        ltd = _row(bs, "Long Term Debt") or 0.0
+        std = _row(bs, "Current Debt", "Short Term Debt") or 0.0
+        total_debt = (ltd + std) if (ltd or std) else None
+    cash = _row(bs, "Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments") or 0.0
+    equity = _row(bs, "Stockholders Equity", "Total Equity Gross Minority Interest", "Common Stock Equity")
+    invested = _row(bs, "Invested Capital")
+
+    fcf = _row(cf, "Free Cash Flow")
+    if fcf is None:
+        ocf = _row(cf, "Operating Cash Flow", "Cash Flow From Continuing Operating Activities")
+        capex = _row(cf, "Capital Expenditure")
+        if ocf is not None and capex is not None:
+            fcf = ocf + capex if capex < 0 else ocf - capex
 
     out: dict = {
-        "earnings_yield": (1.0 / pe) if pe and pe > 0 else None,
-        "roic": None,  # Yahoo has no ROIC; approximate with ROA-lifted ROE blend below
-        "fcf_yield": (fcf / mcap) if (fcf is not None and mcap) else None,
-        "rev_growth": rev_g,
-        "gross_margin": gross_m,
-        "operating_margin": op_m,
-        "net_margin": net_m,
+        "earnings_yield": (ni / market_cap) if (ni is not None and market_cap) else None,
+        "roic": None,
+        "fcf_yield": (fcf / market_cap) if (fcf is not None and market_cap) else None,
+        "rev_growth": None,
+        "gross_margin": (gp / rev) if (gp is not None and rev) else None,
+        "operating_margin": (opi / rev) if (opi is not None and rev) else None,
+        "net_margin": (ni / rev) if (ni is not None and rev) else None,
         "fcf_margin": (fcf / rev) if (fcf is not None and rev) else None,
         "rule_of_40": None,
         "mom_52w": None, "mom_ma200": None,   # app.py fills from the quote
-        "safety": None,                        # composed in app.py merge if possible
-        # new valuation / leverage metrics
-        "ps_ratio": (mcap / rev) if (mcap and rev) else _f(info.get("priceToSalesTrailing12Months")),
+        "safety": None,
+        "ps_ratio": (market_cap / rev) if (market_cap and rev and rev > 0) else None,
         "peg": None,
-        "eps_growth": eps_g,
+        "eps_growth": None,
         "debt_equity": None,
         "net_debt_ebitda": None,
         "interest_coverage": None,
         "source": "yahoo",
     }
 
-    # ROIC proxy: ROE damped toward ROA (Yahoo exposes both).
-    roe = _f(info.get("returnOnEquity"))
-    roa = _f(info.get("returnOnAssets"))
-    if roe is not None and roa is not None:
-        out["roic"] = (roe + roa) / 2.0
-    elif roa is not None:
-        out["roic"] = roa
+    if rev is not None and prev_rev:
+        out["rev_growth"] = (rev - prev_rev) / abs(prev_rev)
+    if ni is not None and prev_ni and prev_ni > 0:
+        out["eps_growth"] = (ni - prev_ni) / prev_ni
 
-    # PEG: only meaningful with positive P/E and positive growth.
-    if pe and pe > 0 and eps_g and eps_g > 0:
-        out["peg"] = pe / (eps_g * 100.0)
-    else:
-        peg_info = _f(info.get("trailingPegRatio") or info.get("pegRatio"))
-        out["peg"] = peg_info if (peg_info and peg_info > 0) else None
+    # ROIC ≈ NOPAT / invested capital (21% tax assumed)
+    if opi is not None:
+        base = invested if invested else (((total_debt or 0.0) + equity - cash) if equity else None)
+        if base and base > 0:
+            out["roic"] = (opi * 0.79) / base
 
-    # Leverage. debtToEquity from Yahoo is in PERCENT (e.g. 41.5) — normalize.
-    de = _f(info.get("debtToEquity"))
-    if de is not None:
-        out["debt_equity"] = de / 100.0 if de > 10 else de
+    # PEG — P/E over EPS-growth%, both must be positive.
+    if (market_cap and ni and ni > 0
+            and out["eps_growth"] is not None and out["eps_growth"] > 0):
+        out["peg"] = (market_cap / ni) / (out["eps_growth"] * 100.0)
+
+    if opi is not None and int_exp and int_exp > 0:
+        out["interest_coverage"] = opi / int_exp
+    if total_debt is not None and equity and equity > 0:
+        out["debt_equity"] = total_debt / equity
     if total_debt is not None and ebitda and ebitda > 0:
-        out["net_debt_ebitda"] = (total_debt - (total_cash or 0.0)) / ebitda
+        out["net_debt_ebitda"] = (total_debt - cash) / ebitda
 
     if out["rev_growth"] is not None:
-        margin = out["fcf_margin"] if out["fcf_margin"] is not None else op_m
+        margin = out["fcf_margin"] if out["fcf_margin"] is not None else out["operating_margin"]
         if margin is not None:
             out["rule_of_40"] = (out["rev_growth"] + margin) * 100.0
+
+    # Piotroski-style safety, same checks as the FMP path
+    checks = []
+    if ni is not None:                       checks.append(ni > 0)
+    if out["operating_margin"] is not None:  checks.append(out["operating_margin"] > 0)
+    if out["fcf_yield"] is not None:         checks.append(out["fcf_yield"] > 0)
+    if out["rev_growth"] is not None:        checks.append(out["rev_growth"] > 0)
+    if gp is not None and prev_gp is not None and rev and prev_rev:
+        checks.append((gp / rev) >= (prev_gp / prev_rev))
+    if opi is not None and prev_opi is not None and rev and prev_rev:
+        checks.append((opi / rev) >= (prev_opi / prev_rev))
+    if checks:
+        out["safety"] = sum(1 for c in checks if c) / len(checks)
 
     return out
