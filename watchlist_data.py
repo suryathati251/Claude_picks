@@ -322,6 +322,32 @@ WATCHLIST = [
     {"ticker": "UNP", "region": "US", "name": "Union Pacific", "sector": "Industrials", "target": None,
      "thesis": "Western-rail duopoly; pricing power + buybacks; valuation reset from premium to market multiple.",
      "catalyst": "Volume recovery; operating-ratio improvement", "risk": "Freight recession; regulatory/merger noise"},
+
+    # ============================================================
+    # ADDITIONS (June 2026): user-requested names.
+    # Targets = research-based analyst consensus at add time; verify before acting.
+    # ============================================================
+
+    # ---- Software ----
+    {"ticker": "WDAY", "region": "US", "name": "Workday", "sector": "Software", "target": 272,
+     "thesis": "HCM + Financials cloud leader. Buy-rated, avg target ~$272. Durable subscription model off the highs; AI agents + FCF-margin expansion story.",
+     "catalyst": "cRPO/backlog growth; Workday AI agents; margin expansion", "risk": "Enterprise IT-budget cyclicality; seat-based pricing; competition"},
+    {"ticker": "PRGS", "region": "US", "name": "Progress Software", "sector": "Software", "target": 62,
+     "thesis": "Acquisitive infrastructure-software roll-up; high FCF + dividend. Buy-rated but targets cut to high-$50s/low-$60s on growth concerns. MarkLogic/ShareFile/Nuclia integration.",
+     "catalyst": "Accretive M&A; ARR from recent deals; agentic-AI data products", "risk": "Growth is acquisition-driven; integration + leverage risk"},
+
+    # ---- Consumer / Comm ----
+    {"ticker": "SE", "region": "US", "name": "Sea Limited (ADR)", "sector": "Consumer/Comm", "target": 140,
+     "thesis": "Strong Buy, avg ~$140 (~45% upside). Shopee e-commerce profitability + SeaMoney fintech scaling + Garena gaming stabilizing.",
+     "catalyst": "Shopee GMV + take-rate; SeaMoney loan book; Garena bookings", "risk": "SE-Asia competition (TikTok Shop); EM/FX; gaming volatility"},
+    {"ticker": "LULU", "region": "US", "name": "Lululemon Athletica", "sector": "Consumer/Comm", "target": 186,
+     "thesis": "Beaten down from highs on weak US comps; avg target ~$186 but Hold-rated. Athleisure brand turnaround + international (China) growth is the swing factor.",
+     "catalyst": "US comp stabilization; China/international expansion", "risk": "Hold consensus — soft US demand, competition (Alo/Vuori), tariffs"},
+
+    # ---- Financials (speculative small-cap fintech) ----
+    {"ticker": "PGY", "region": "US", "name": "Pagaya Technologies", "sector": "Financials", "target": 33,
+     "thesis": "AI credit-network for lending partners; Strong Buy, avg ~$33. GAAP-profitability inflection — speculative small-cap fintech.",
+     "catalyst": "Network volume growth; funding-partner adds; profitability ramp", "risk": "Credit-cycle sensitive; ABS funding-market reliance; small-cap volatility"},
 ]
 
 SECTOR_ORDER = [
