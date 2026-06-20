@@ -50,10 +50,12 @@ class FMPRateLimitError(RuntimeError):
 METRIC_KEYS = (
     "earnings_yield", "roic", "fcf_yield", "rev_growth",
     "gross_margin", "operating_margin", "net_margin", "fcf_margin", "rule_of_40",
-    "mom_52w", "mom_ma200", "safety",
+    "mom_52w", "mom_ma200", "mom_12_1", "safety",
     # valuation / leverage additions (QARP)
     "ps_ratio", "peg", "eps_growth",
     "debt_equity", "net_debt_ebitda", "interest_coverage",
+    # quality: Novy-Marx gross profitability (gross profit / total assets)
+    "gross_profitability",
 )
 
 # Candidate FMP field names for the few metrics we still read pre-computed.
@@ -65,17 +67,38 @@ _FCFM_KEYS = ["freeCashFlowMarginTTM", "freeCashFlowMargin"]
 
 
 # ---------------------------------------------------------------------------
-# Factor families & lens presets  (higher_better per metric)
+# Factor families -> CONCEPT groups -> metrics   (higher_better per metric)
 # ---------------------------------------------------------------------------
-# higher_better=False means LOW values score high (P/S, PEG, leverage).
-FAMILIES: dict[str, dict[str, bool]] = {
-    "Value":    {"earnings_yield": True, "fcf_yield": True,
-                 "ps_ratio": False, "peg": False},
-    "Quality":  {"roic": True, "gross_margin": True, "operating_margin": True},
-    "Growth":   {"rev_growth": True, "rule_of_40": True, "eps_growth": True},
-    "Momentum": {"mom_52w": True, "mom_ma200": True},
-    "Safety":   {"safety": True, "debt_equity": False,
-                 "net_debt_ebitda": False, "interest_coverage": True},
+# Why two levels: averaging correlated metrics flat double-counts them. e.g.
+# gross + operating margin move together, so flat-averaging Quality would give
+# "margins" 2/3 weight and dilute ROIC. Grouping correlated metrics into one
+# CONCEPT and averaging concepts equally fixes that — adding a third margin
+# metric no longer drowns the independent signals. higher_better=False means a
+# LOW raw value should score high (P/S, PEG, leverage).
+FAMILIES: dict[str, dict[str, dict[str, bool]]] = {
+    "Value": {
+        "yield":      {"earnings_yield": True, "fcf_yield": True},   # cash/earnings cheapness
+        "sales":      {"ps_ratio": False},                           # sales cheapness
+        "growth_adj": {"peg": False},                                # growth-adjusted cheapness
+    },
+    "Quality": {
+        "returns": {"roic": True, "gross_profitability": True},      # returns on capital/assets
+        "margins": {"gross_margin": True, "operating_margin": True}, # correlated -> one concept
+    },
+    "Growth": {
+        "topline":    {"rev_growth": True},
+        "bottomline": {"eps_growth": True},
+        "rule40":     {"rule_of_40": True},
+    },
+    "Momentum": {
+        "trend_12_1": {"mom_12_1": True},                  # canonical 12-1m return (primary)
+        "position":   {"mom_52w": True, "mom_ma200": True},# crude price proxies (fallback)
+    },
+    "Safety": {
+        "health":   {"safety": True},                      # Piotroski-style checks
+        "leverage": {"debt_equity": False, "net_debt_ebitda": False},  # both leverage -> one concept
+        "coverage": {"interest_coverage": True},
+    },
 }
 
 # Lens = weights over families. All sub-scores always display; the lens only sets
@@ -100,6 +123,45 @@ DEFAULT_LENS = "QARP (Underv. Quality)"
 
 # Rank within sector only when there are enough peers; else fall back to universe.
 MIN_SECTOR_PEERS = 5
+
+# A family sub-score is shrunk toward neutral (0.5) in proportion to how many of
+# its CONCEPTS are missing, so a stock with 1-of-3 concepts can't fluke a 100.
+# Safety gate: a gentle multiplier on the composite from the ABSOLUTE Piotroski
+# health fraction — fragile names can't top any lens, even momentum/growth.
+SAFETY_GATE_FLOOR = 0.85   # worst-health name keeps 85% of its score
+
+
+def safety_gate(safety_raw: Optional[float]) -> float:
+    """Map an absolute health fraction in [0,1] to a composite multiplier in
+    [SAFETY_GATE_FLOOR, 1.0]. None (unknown) -> 1.0 (no penalty for missing data)."""
+    if safety_raw is None:
+        return 1.0
+    s = max(0.0, min(1.0, safety_raw))
+    return SAFETY_GATE_FLOOR + (1.0 - SAFETY_GATE_FLOOR) * s
+
+
+def edge_net_debt_ebitda(total_debt: Optional[float], cash: Optional[float],
+                         ebitda: Optional[float]) -> Optional[float]:
+    """Net-debt / EBITDA with edge handling so risky names don't escape the
+    Safety screen by having undefined EBITDA. EBITDA<=0 + net debt -> worst (99);
+    net cash -> good (-1)."""
+    if total_debt is None:
+        return None
+    net_debt = total_debt - (cash or 0.0)
+    if ebitda and ebitda > 0:
+        return net_debt / ebitda
+    return -1.0 if net_debt <= 0 else 99.0
+
+
+def edge_interest_coverage(opi: Optional[float], int_exp: Optional[float],
+                           total_debt: Optional[float]) -> Optional[float]:
+    """Interest coverage; a debt-free firm gets a high (good) sentinel instead of
+    None, so it earns credit for having no interest burden."""
+    if int_exp and int_exp > 0:
+        return (opi / int_exp) if opi is not None else None
+    if (total_debt or 0.0) <= 0.0:
+        return 50.0   # effectively unleveraged -> excellent coverage
+    return None       # has debt but interest figure missing -> leave unranked
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +252,7 @@ def fetch_fundamentals(symbol: str, api_key: str, market_cap: Optional[float] = 
                symbol, "income-statement")
     rows = inc if isinstance(inc, list) else ([inc] if isinstance(inc, dict) and inc else [])
     ebitda = None
+    gp = None
     if rows:
         cur = rows[0]
         rev = _num(cur, "revenue"); gp = _num(cur, "grossProfit")
@@ -260,10 +323,17 @@ def fetch_fundamentals(symbol: str, api_key: str, market_cap: Optional[float] = 
                 total_debt = (std or 0.0) + (ltd or 0.0)
         cash = _num(bs, "cashAndCashEquivalents", "cashAndShortTermInvestments") or 0.0
         equity = _num(bs, "totalStockholdersEquity", "totalEquity")
+        total_assets = _num(bs, "totalAssets")
         if total_debt is not None and equity and equity > 0:
             out["debt_equity"] = total_debt / equity
-        if total_debt is not None and ebitda and ebitda > 0:
-            out["net_debt_ebitda"] = (total_debt - cash) / ebitda
+        # Net-debt/EBITDA with edge handling (net cash -> good; EBITDA<=0 -> worst).
+        out["net_debt_ebitda"] = edge_net_debt_ebitda(total_debt, cash, ebitda)
+        # Debt-free firms get credit for having no interest burden.
+        if out["interest_coverage"] is None and total_debt is not None and total_debt <= 0:
+            out["interest_coverage"] = 50.0
+        # Gross profitability (Novy-Marx): gross profit / total assets.
+        if gp is not None and total_assets and total_assets > 0:
+            out["gross_profitability"] = gp / total_assets
 
     # Rule of 40 = revenue growth % + (FCF margin if present, else operating margin) %.
     if out["rev_growth"] is not None:
@@ -320,30 +390,47 @@ def _sector_percentiles(values: dict[str, Optional[float]], sectors: dict[str, s
 
 def compute_family_scores(metrics_by_ticker: dict[str, dict],
                           sectors: dict[str, str]) -> dict[str, dict]:
-    """Return {ticker: {family: {"score": 0..1|None, "coverage": int, "n": int}}}.
+    """Return {ticker: {family: {"score", "raw", "coverage", "n", "metrics"}}}.
 
-    Each metric is sector-neutral percentile-ranked across the universe, then
-    averaged (equal weight) into its family sub-score, renormalized over only the
-    metrics that ticker actually has.
+    Pipeline per family:
+      1. Each metric is sector-neutral percentile-ranked across the universe.
+      2. Metrics are averaged WITHIN their concept (so correlated metrics count
+         once), then concepts are averaged equally -> raw family score.
+      3. The raw score is shrunk toward 0.5 in proportion to missing concepts, so
+         a stock with thin coverage can't fluke an extreme score.
+    ``coverage``/``n`` count CONCEPTS present/total; ``metrics`` counts raw metrics.
     """
     tickers = list(metrics_by_ticker.keys())
 
+    # Rank every metric once (sector-neutral).
     metric_pct: dict[tuple, dict[str, float]] = {}
-    for fam, metrics in FAMILIES.items():
-        for m, higher_better in metrics.items():
-            raw = {t: (metrics_by_ticker.get(t) or {}).get(m) for t in tickers}
-            metric_pct[(fam, m)] = _sector_percentiles(raw, sectors, higher_better)
+    for fam, concepts in FAMILIES.items():
+        for concept, metrics in concepts.items():
+            for m, higher_better in metrics.items():
+                raw = {t: (metrics_by_ticker.get(t) or {}).get(m) for t in tickers}
+                metric_pct[(fam, concept, m)] = _sector_percentiles(raw, sectors, higher_better)
 
     results: dict[str, dict] = {}
     for t in tickers:
         fam_scores = {}
-        for fam, metrics in FAMILIES.items():
-            ps = [metric_pct[(fam, m)].get(t) for m in metrics]
-            ps = [p for p in ps if p is not None]
+        for fam, concepts in FAMILIES.items():
+            concept_scores, n_metrics = [], 0
+            for concept, metrics in concepts.items():
+                ps = [metric_pct[(fam, concept, m)].get(t) for m in metrics]
+                ps = [p for p in ps if p is not None]
+                if ps:
+                    concept_scores.append(sum(ps) / len(ps))
+                    n_metrics += len(ps)
+            n_concepts = len(concepts)
+            if concept_scores:
+                raw = sum(concept_scores) / len(concept_scores)
+                cov_frac = len(concept_scores) / n_concepts
+                score = 0.5 + (raw - 0.5) * cov_frac          # shrink toward neutral
+            else:
+                raw = score = None
             fam_scores[fam] = {
-                "score": (sum(ps) / len(ps)) if ps else None,
-                "coverage": len(ps),
-                "n": len(metrics),
+                "score": score, "raw": raw,
+                "coverage": len(concept_scores), "n": n_concepts, "metrics": n_metrics,
             }
         results[t] = fam_scores
     return results

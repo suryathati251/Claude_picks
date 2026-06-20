@@ -58,10 +58,12 @@ except ImportError:
 from watchlist_growth import GROWTH_WATCHLIST
 from fundamentals import (
     fetch_fundamentals, compute_family_scores, composite_for_lens,
-    compute_flags, target_is_sane, has_any, FMPRateLimitError,
+    compute_flags, safety_gate, target_is_sane, has_any, FMPRateLimitError,
     FAMILIES, LENSES, DEFAULT_LENS, CALLS_PER_TICKER,
 )
-from yahoo_fallback import fetch_quotes_yahoo, fetch_fundamentals_yahoo, HAVE_YF
+from yahoo_fallback import (
+    fetch_quotes_yahoo, fetch_fundamentals_yahoo, fetch_momentum_yahoo, HAVE_YF,
+)
 import market_risk
 
 _seen = {item["ticker"] for item in _BASE_WATCHLIST}
@@ -78,6 +80,7 @@ QUOTE_TTL = 6 * 60 * 60
 FUND_TTL = 14 * 24 * 60 * 60
 YF_FUND_TTL = 3 * 24 * 60 * 60   # Yahoo-sourced fundamentals expire sooner so FMP can replace them
 MARKET_TTL = 6 * 60 * 60
+MOM_TTL = 24 * 60 * 60           # 12-1 momentum moves slowly; refresh once a day
 
 # Budget is in TICKERS per refresh; each ticker costs CALLS_PER_TICKER FMP calls.
 # Default keeps one full refresh comfortably inside the 250-calls/day free tier
@@ -138,6 +141,8 @@ class PersistentStore:
 def quote_store(): return PersistentStore(os.path.join(_cache_dir(), "quotes.json"))
 @st.cache_resource
 def fund_store(): return PersistentStore(os.path.join(_cache_dir(), "fundamentals.json"))
+@st.cache_resource
+def momentum_store(): return PersistentStore(os.path.join(_cache_dir(), "momentum.json"))
 
 
 def _fresh(entry, ttl): return bool(entry) and (time.time() - entry.get("ts", 0)) < ttl
@@ -332,6 +337,33 @@ def fetch_fundamentals_all(api_key, symbols, market_caps, force):
     return funds, refreshed, pending, n_loaded, rate_limited
 
 
+def fetch_momentum(symbols, force):
+    """Disk-cached 12-1 month momentum from Yahoo (free, no FMP calls). Returns
+    {symbol: mom_12_1|None}. Refreshes only stale entries (daily)."""
+    if not HAVE_YF:
+        return {}
+    store = momentum_store()
+    now = time.time()
+    out, need = {}, []
+    for s in symbols:
+        e = store.get(s)
+        if _fresh(e, MOM_TTL) and not force:
+            out[s] = e["data"]
+        else:
+            need.append(s)
+    if need:
+        try:
+            res = fetch_momentum_yahoo(need)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("momentum fetch failed: %s", str(e)[:120]); res = {}
+        for sym, d in res.items():
+            val = (d or {}).get("mom_12_1")
+            store.set(sym, {"data": val, "ts": now})
+            out[sym] = val
+        store.flush()
+    return out
+
+
 @st.cache_data(ttl=MARKET_TTL, show_spinner=False)
 def cached_market_context(api_key): return market_risk.get_market_context(api_key)
 
@@ -398,6 +430,7 @@ def build_dataframe(quotes, fundamentals, fam_scores) -> pd.DataFrame:
             "Rev Growth %": pct("rev_growth"), "Gross Mgn %": pct("gross_margin"),
             "Rule40": fund.get("rule_of_40"), "FCF Yld %": pct("fcf_yield"),
             "Safety %": pct("safety"),
+            "Mom 12-1 %": pct("mom_12_1"), "Gross Prof %": pct("gross_profitability"),
             "P/S": fund.get("ps_ratio"), "PEG": fund.get("peg"),
             "D/E": fund.get("debt_equity"),
             "FlagAdj": flag_adj, "Flags": " · ".join(flag_list) if flag_list else "",
@@ -455,6 +488,10 @@ with st.spinner(f"Loading fundamentals (up to {FUND_BUDGET} this refresh)…"):
     fundamentals, f_refreshed, f_pending, f_loaded, f_rl = fetch_fundamentals_all(
         api_key, SYMBOLS, market_caps, force_funds)
 
+# Real 12-1 month momentum (free, Yahoo, cached daily). Empty if yfinance absent.
+with st.spinner("Loading momentum…"):
+    mom_12_1 = fetch_momentum(SYMBOLS, force_funds)
+
 # Merge in cheap, quote-derived signals: earnings-yield fallback + Momentum.
 for s in SYMBOLS:
     f = fundamentals.get(s)
@@ -469,6 +506,8 @@ for s in SYMBOLS:
         f["mom_52w"] = (price - lo) / (hi - lo)          # 0..1 position in 52w range
     if price and ma200:
         f["mom_ma200"] = price / ma200 - 1               # trend vs 200-day average
+    if mom_12_1.get(s) is not None:
+        f["mom_12_1"] = mom_12_1[s]                       # canonical 12-1m momentum
     # PEG fallback from the quote's P/E + statement EPS growth (both must be > 0).
     eg = f.get("eps_growth")
     if f.get("peg") is None and pe and pe > 0 and eg and eg > 0:
@@ -562,7 +601,11 @@ def _composite(row):
             num += w * v; den += w; present += 1
     base = (num / den) if den > 0 else float("nan")
     adj = row["FlagAdj"] if pd.notna(row.get("FlagAdj", float("nan"))) else 0.0
-    score = min(100.0, max(0.0, base + adj)) if pd.notna(base) else base
+    # Safety gate: a gentle multiplier from the absolute health fraction, so a
+    # fragile balance sheet caps the score even in lenses that ignore Safety.
+    s_raw = row.get("Safety %")
+    gate = safety_gate(s_raw / 100.0) if pd.notna(s_raw) else 1.0
+    score = min(100.0, max(0.0, base * gate + adj)) if pd.notna(base) else base
     return pd.Series({"Score": score, "Cov": present, "CovN": len(weights)})
 
 view[["Score", "Cov", "CovN"]] = view.apply(_composite, axis=1)
@@ -611,6 +654,7 @@ def render_display(row):
         "PEG": f"{row['PEG']:.2f}" if pd.notna(row["PEG"]) else "—",
         "D/E": f"{row['D/E']:.2f}" if pd.notna(row["D/E"]) else "—",
         "Flags": row["Flags"] if row["Flags"] else "—",
+        "12-1m": f"{row['Mom 12-1 %']:+.0f}%" if pd.notna(row["Mom 12-1 %"]) else "—",
         "52w": f"{row['52w Pos %']:.0f}%" if pd.notna(row["52w Pos %"]) else "—",
         "Mkt Cap": fmt_mcap(row["Mkt Cap"], row["Currency"]),
         "Target": target_str,
@@ -645,7 +689,9 @@ def color_signed(val):
 styler = display.style
 for c in ["Score", "V", "Q", "G", "M", "S"]:
     styler = styler.map(color_score, subset=[c])
-styler = styler.map(color_signed, subset=["Day %"]).map(color_signed, subset=["Rev Grw"])
+styler = (styler.map(color_signed, subset=["Day %"])
+                .map(color_signed, subset=["Rev Grw"])
+                .map(color_signed, subset=["12-1m"]))
 
 st.dataframe(
     styler, width="stretch", hide_index=True,
@@ -665,16 +711,23 @@ with st.expander("ℹ️ How the score works & caveats", expanded=False):
         f"""
 **Five sub-scores, each 0–100 (percentile vs peers):**
 
-- **V — Value:** earnings yield + FCF yield + **low P/S** + **low PEG** (cheapness, growth-adjusted).
-- **Q — Quality:** ROIC + gross margin + operating margin (profitability / returns on capital).
-- **G — Growth:** revenue growth + EPS growth + Rule-of-40.
-- **M — Momentum:** position in the 52-week range + price vs the 200-day average (free from the quote).
-- **S — Safety:** Piotroski-style health check + **low debt/equity** + **low net-debt/EBITDA** + interest coverage.
+- **V — Value:** earnings & FCF yield · low P/S · low PEG (cheapness, growth-adjusted).
+- **Q — Quality:** ROIC + **gross profitability (gross profit ÷ assets, Novy-Marx)** · margins.
+- **G — Growth:** revenue growth · EPS growth · Rule-of-40.
+- **M — Momentum:** **real 12-minus-1-month return** · 52-week range position · price vs 200-day avg.
+- **S — Safety:** Piotroski-style health · leverage (D/E + net-debt/EBITDA) · interest coverage.
 
-**Logic:** each metric is percentile-ranked **within its sector** (so a bank ranks against banks, not against
-software), then equal-weighted into its family. The headline **Score** blends families per the **lens** you
-pick — equal weights on purpose, since tuned weights overfit. Sub-scores renormalize over only the metrics a
-ticker actually has; **Cov** shows how many of the lens's families were available.
+**Logic (how a sub-score is built):**
+
+1. Each metric is percentile-ranked **within its sector** (a bank ranks against banks, not software).
+2. Correlated metrics are grouped into a **concept** and averaged, then concepts are averaged equally — so
+   adding a third margin metric can't drown ROIC (no double-counting).
+3. The family score is **shrunk toward neutral by missing coverage**, so a stock with only 1 of 3 concepts
+   can't fluke a 100. **Cov** shows how many of the lens's families were available.
+
+**Headline Score** blends families per the **lens** (equal-ish weights on purpose — tuned weights overfit),
+then applies a gentle **Safety gate** (fragile balance sheets keep ≥85% of their score, so a cheap-but-shaky
+name can't top a momentum or growth lens) and the absolute red/green **flags** below.
 
 **Flags (absolute checks, applied on top of the relative ranks):** percentiles only say "better than peers" —
 flags catch what's bad or great in absolute terms. Red flags subtract points: falling revenue (−6 to −12),
@@ -695,7 +748,8 @@ balance sheet. QARP = Value 1.0 × Quality 1.0 × Safety 0.75 × Growth 0.25, fl
 - **Thin sectors** (fewer than {5} rated names) fall back to whole-universe ranking.
 - **Free-tier budget:** prices = 1 batch call; fundamentals = {CALLS_PER_TICKER} calls/ticker, cached
   {FUND_TTL//86400}d, ≤{FUND_BUDGET} tickers refreshed per load, stopping on "Limit Reach".
-  Momentum adds **no** API calls. Anything FMP can't deliver is filled from **Yahoo Finance**
-  (keyless, cached {YF_FUND_TTL//86400}d so FMP data replaces it when quota allows).
+  Momentum adds **no FMP calls** (one free Yahoo price download/day, cached). Anything FMP can't
+  deliver is filled from **Yahoo Finance** (keyless, cached {YF_FUND_TTL//86400}d so FMP replaces it
+  when quota allows).
 """
     )

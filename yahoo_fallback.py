@@ -28,6 +28,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from fundamentals import edge_net_debt_ebitda, edge_interest_coverage
+
 logger = logging.getLogger("yahoo_fallback")
 
 try:
@@ -98,6 +100,43 @@ def fetch_quotes_yahoo(symbols: list[str]) -> dict[str, dict]:
             out[sym]["marketCap"] = _f(getattr(fi, "market_cap", None))
         except Exception:  # noqa: BLE001
             pass
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Momentum — canonical 12-minus-1-month total return (free, from price history)
+# ---------------------------------------------------------------------------
+def fetch_momentum_yahoo(symbols: list[str]) -> dict[str, dict]:
+    """Return {symbol: {"mom_12_1": float|None}}: the return from ~12 months ago
+    to ~1 month ago (skipping the latest month to avoid short-term reversal — the
+    canonical momentum factor). One bulk download; never raises."""
+    if not HAVE_YF or not symbols:
+        return {}
+    try:
+        hist = yf.download(
+            tickers=" ".join(symbols), period="1y", interval="1d",
+            group_by="ticker", auto_adjust=True, progress=False, threads=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("yahoo momentum download failed: %s", str(e)[:160])
+        return {}
+
+    out: dict[str, dict] = {}
+    for sym in symbols:
+        try:
+            try:
+                df = hist[sym]
+            except (KeyError, TypeError):
+                df = hist
+            close = df["Close"].dropna()
+            if len(close) < 200:                       # need ~10mo+ to be meaningful
+                continue
+            p_1m = _f(close.iloc[-21])                 # ~1 month ago
+            p_12m = _f(close.iloc[-252]) if len(close) >= 252 else _f(close.iloc[0])
+            if p_1m and p_12m and p_12m > 0:
+                out[sym] = {"mom_12_1": p_1m / p_12m - 1.0}
+        except Exception:  # noqa: BLE001
+            continue
     return out
 
 
@@ -182,6 +221,7 @@ def fetch_fundamentals_yahoo(symbol: str, market_cap: Optional[float] = None) ->
     cash = _row(bs, "Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments") or 0.0
     equity = _row(bs, "Stockholders Equity", "Total Equity Gross Minority Interest", "Common Stock Equity")
     invested = _row(bs, "Invested Capital")
+    total_assets = _row(bs, "Total Assets")
 
     fcf = _row(cf, "Free Cash Flow")
     if fcf is None:
@@ -200,7 +240,7 @@ def fetch_fundamentals_yahoo(symbol: str, market_cap: Optional[float] = None) ->
         "net_margin": (ni / rev) if (ni is not None and rev) else None,
         "fcf_margin": (fcf / rev) if (fcf is not None and rev) else None,
         "rule_of_40": None,
-        "mom_52w": None, "mom_ma200": None,   # app.py fills from the quote
+        "mom_52w": None, "mom_ma200": None, "mom_12_1": None,  # app.py fills these
         "safety": None,
         "ps_ratio": (market_cap / rev) if (market_cap and rev and rev > 0) else None,
         "peg": None,
@@ -208,6 +248,7 @@ def fetch_fundamentals_yahoo(symbol: str, market_cap: Optional[float] = None) ->
         "debt_equity": None,
         "net_debt_ebitda": None,
         "interest_coverage": None,
+        "gross_profitability": (gp / total_assets) if (gp is not None and total_assets and total_assets > 0) else None,
         "source": "yahoo",
     }
 
@@ -227,12 +268,11 @@ def fetch_fundamentals_yahoo(symbol: str, market_cap: Optional[float] = None) ->
             and out["eps_growth"] is not None and out["eps_growth"] > 0):
         out["peg"] = (market_cap / ni) / (out["eps_growth"] * 100.0)
 
-    if opi is not None and int_exp and int_exp > 0:
-        out["interest_coverage"] = opi / int_exp
     if total_debt is not None and equity and equity > 0:
         out["debt_equity"] = total_debt / equity
-    if total_debt is not None and ebitda and ebitda > 0:
-        out["net_debt_ebitda"] = (total_debt - cash) / ebitda
+    # Edge-handled leverage/coverage (net cash -> good; EBITDA<=0 -> worst; debt-free -> strong coverage)
+    out["net_debt_ebitda"] = edge_net_debt_ebitda(total_debt, cash, ebitda)
+    out["interest_coverage"] = edge_interest_coverage(opi, int_exp, total_debt)
 
     if out["rev_growth"] is not None:
         margin = out["fcf_margin"] if out["fcf_margin"] is not None else out["operating_margin"]
