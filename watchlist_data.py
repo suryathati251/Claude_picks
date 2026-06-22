@@ -371,6 +371,24 @@ WATCHLIST = [
      "thesis": "Vertical-SaaS leader for life sciences (CRM + Vault); durable, highly profitable, FCF-rich compounder trading at a premium multiple.",
      "catalyst": "Vault platform expansion; in-house CRM migration; new verticals",
      "risk": "Premium valuation; pharma IT-budget cyclicality; large-customer concentration"},
+
+    # ---- ADDED on request: GRRR / EQT / RH / HOV ----  (target=None; ranked on fundamentals)
+    {"ticker": "GRRR", "region": "US", "name": "Gorilla Technology (ADR)", "sector": "Software", "target": None,
+     "thesis": "Micro-cap edge-AI / video analytics + cybersecurity + smart-city integrator; large contract awards drive lumpy growth. Highly speculative.",
+     "catalyst": "Government / smart-city contract awards; backlog conversion to revenue",
+     "risk": "Micro-cap volatility; lumpy project revenue; execution + dilution risk"},
+    {"ticker": "EQT", "region": "US", "name": "EQT Corp", "sector": "Energy", "target": None,
+     "thesis": "Largest US natural-gas producer (Appalachia); low-cost and vertically integrated after the Equitrans midstream deal. Leveraged to gas prices + LNG-export demand.",
+     "catalyst": "Henry Hub / LNG export demand; debt paydown; midstream synergies",
+     "risk": "Natural-gas price cyclicality; weather-driven demand; commodity exposure"},
+    {"ticker": "RH", "region": "US", "name": "RH (Restoration Hardware)", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Luxury home-furnishings brand with high margins; earnings are highly cyclical with housing turnover and the high-end consumer. Housing-recovery play.",
+     "catalyst": "Housing-market recovery; gallery + international expansion; product refresh",
+     "risk": "High operating leverage to a weak housing cycle; debt; discretionary luxury demand"},
+    {"ticker": "HOV", "region": "US", "name": "Hovnanian Enterprises", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Highly leveraged homebuilder; deep-value / turnaround with a large discount to book and high rate sensitivity. Speculative small-cap.",
+     "catalyst": "Rate cuts improving affordability; debt reduction; community-count growth",
+     "risk": "Heavy leverage; rate / affordability sensitivity; cyclical small-cap volatility"},
 ]
 
 SECTOR_ORDER = [
