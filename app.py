@@ -627,6 +627,108 @@ m3.metric(f"Avg score ({rank_mode.split(' ')[0]})", f"{avg_score:.0f}/100")
 m4.metric("Top", f"{top_name} {top_score:.0f}")
 st.divider()
 
+# ---------------------------------------------------------------------------
+# Single-ticker lookup — type ANY symbol (watchlist or not) to pull its metrics
+# ---------------------------------------------------------------------------
+st.subheader("🔎 Look up a ticker")
+query = st.text_input(
+    "ticker lookup", "", label_visibility="collapsed",
+    placeholder="Type any symbol — AAPL, MSFT, RELIANCE.NS — and press Enter",
+).strip().upper()
+
+if query:
+    is_member = query in SYMBOLS
+    look_sector = SECTORS.get(query, "Lookup")
+    look_name = next((it["name"] for it in WATCHLIST if it["ticker"] == query), query)
+    look_region = next((it["region"] for it in WATCHLIST if it["ticker"] == query), "US")
+    have = (is_member and has_any(fundamentals.get(query) or {})
+            and (quotes.get(query) or {}).get("price") is not None)
+
+    look_fund, look_quote = (fundamentals.get(query) or {}), (quotes.get(query) or {})
+    if not have:
+        try:
+            with st.spinner(f"Fetching {query}…"):
+                lq, *_ = fetch_quotes(api_key, [query], False)
+                look_quote = lq.get(query) or {}
+                lf, *_ = fetch_fundamentals_all(api_key, [query],
+                                                {query: look_quote.get("marketCap")}, False)
+                look_fund = lf.get(query) or {}
+                price, lo, hi, ma200, pe = (look_quote.get("price"), look_quote.get("yearLow"),
+                                            look_quote.get("yearHigh"), look_quote.get("ma200"),
+                                            look_quote.get("pe"))
+                if look_fund.get("earnings_yield") is None and pe and pe > 0:
+                    look_fund["earnings_yield"] = 1.0 / pe
+                if price and lo is not None and hi and hi > lo:
+                    look_fund["mom_52w"] = (price - lo) / (hi - lo)
+                if price and ma200:
+                    look_fund["mom_ma200"] = price / ma200 - 1
+                mom = fetch_momentum([query], False).get(query)
+                if mom is not None:
+                    look_fund["mom_12_1"] = mom
+        except Exception as _e:  # noqa: BLE001
+            look_quote = {}
+            logger.warning("lookup %s failed: %s", query, str(_e)[:120])
+
+    if not look_quote or look_quote.get("price") is None:
+        st.warning(f"Couldn't find data for **{query}**. Check the symbol — non-US tickers need an "
+                   f"exchange suffix (e.g. `RELIANCE.NS`, `7203.T`, `BARC.L`).")
+    else:
+        # Score it against the full universe so V/Q/G/M/S are real percentiles.
+        combined = {**fundamentals, query: look_fund}
+        combined_sec = {**SECTORS, query: look_sector}
+        look_sub = {f: ((compute_family_scores(combined, combined_sec).get(query, {}).get(f) or {}).get("score"))
+                    for f in FAMILIES} if not is_member else \
+                   {f: ((fam_scores.get(query, {}).get(f) or {}).get("score")) for f in FAMILIES}
+        num = den = 0.0
+        for f, w in weights.items():
+            s = look_sub.get(f)
+            if s is not None:
+                num += w * s; den += w
+        base = (num / den * 100) if den > 0 else None
+        flag_adj, flag_list = compute_flags(look_fund)
+        gate = safety_gate(look_fund.get("safety"))
+        comp = min(100.0, max(0.0, base * gate + flag_adj)) if base is not None else None
+        ccy = REGION_CURRENCY.get(look_region, "USD")
+
+        tag = f"_{look_sector}_" if is_member else "_(not in watchlist — ranked vs whole universe)_"
+        st.markdown(f"### {look_name} · {query}  ·  {tag}")
+
+        cols = st.columns(7)
+        def _sub(f):
+            v = look_sub.get(f); return f"{v*100:.0f}" if v is not None else "—"
+        cols[0].metric(f"Score · {rank_mode.split(' ')[0]}", f"{comp:.0f}" if comp is not None else "—")
+        cols[1].metric("Value", _sub("Value"))
+        cols[2].metric("Quality", _sub("Quality"))
+        cols[3].metric("Growth", _sub("Growth"))
+        cols[4].metric("Momentum", _sub("Momentum"))
+        cols[5].metric("Safety", _sub("Safety"))
+        cols[6].metric("Price", fmt_price(look_quote.get("price"), ccy),
+                       f"{look_quote.get('changePercentage'):+.2f}%"
+                       if look_quote.get("changePercentage") is not None else None)
+
+        def _p(k):
+            v = look_fund.get(k); return f"{v*100:.1f}%" if v is not None else "—"
+        def _r(k, d=2):
+            v = look_fund.get(k); return f"{v:.{d}f}" if v is not None else "—"
+        raw = {
+            "Earn Yld": _p("earnings_yield"), "ROIC": _p("roic"), "FCF Yld": _p("fcf_yield"),
+            "Rev Grw": _p("rev_growth"), "EPS Grw": _p("eps_growth"),
+            "Gross Mgn": _p("gross_margin"), "Gross Prof": _p("gross_profitability"),
+            "Op Mgn": _p("operating_margin"),
+            "Rule40": _r("rule_of_40", 0), "12-1m": _p("mom_12_1"),
+            "P/S": _r("ps_ratio", 1), "PEG": _r("peg", 2), "D/E": _r("debt_equity", 2),
+            "Net Debt/EBITDA": _r("net_debt_ebitda", 1), "Int Cov": _r("interest_coverage", 1),
+            "Mkt Cap": fmt_mcap(look_quote.get("marketCap"), ccy),
+        }
+        st.dataframe(pd.DataFrame([raw]), width="stretch", hide_index=True)
+        if flag_list:
+            st.caption("**Flags:** " + " · ".join(flag_list))
+        if is_member:
+            thesis = next((it["thesis"] for it in WATCHLIST if it["ticker"] == query), "")
+            if thesis:
+                st.caption(f"**Thesis:** {thesis}")
+st.divider()
+
 
 def _i(v):  # 0–100 integer or em-dash
     return f"{v:.0f}" if pd.notna(v) else "—"
@@ -695,7 +797,9 @@ styler = (styler.map(color_signed, subset=["Day %"])
 
 st.dataframe(
     styler, width="stretch", hide_index=True,
-    height=min(60 + 36 * len(display), 900),
+    # Render at full height so ALL rows show and the whole PAGE scrolls, instead
+    # of trapping the rows inside a fixed-height box with its own scrollbar.
+    height=(len(display) + 1) * 36 + 3,
     column_config={"Thesis": st.column_config.TextColumn(width="large"),
                    "Flags": st.column_config.TextColumn(width="medium"),
                    "Name": st.column_config.TextColumn(width="medium")},

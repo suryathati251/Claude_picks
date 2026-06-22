@@ -348,6 +348,29 @@ WATCHLIST = [
     {"ticker": "PGY", "region": "US", "name": "Pagaya Technologies", "sector": "Financials", "target": 33,
      "thesis": "AI credit-network for lending partners; Strong Buy, avg ~$33. GAAP-profitability inflection — speculative small-cap fintech.",
      "catalyst": "Network volume growth; funding-partner adds; profitability ramp", "risk": "Credit-cycle sensitive; ABS funding-market reliance; small-cap volatility"},
+
+    # ---- ADDED on request: QRVO / BABA / BIDU / NIO / VEEV ----
+    # target=None — the screener ranks on reported fundamentals, not baked-in analyst targets.
+    {"ticker": "QRVO", "region": "US", "name": "Qorvo", "sector": "AI/Semis", "target": None,
+     "thesis": "RF / connectivity chipmaker with heavy handset exposure (Apple/Android), pushing into defense, power and IoT. Margin-recovery + diversification story.",
+     "catalyst": "Handset demand recovery; content gains; defense/IoT mix shift",
+     "risk": "Customer concentration (Apple/Samsung); smartphone cyclicality"},
+    {"ticker": "BABA", "region": "US", "name": "Alibaba (ADR)", "sector": "Consumer/Comm", "target": None,
+     "thesis": "China e-commerce + cloud/AI giant at low multiples; capital returns and cloud re-acceleration are the swing factors.",
+     "catalyst": "Cloud/AI revenue growth; buybacks; China consumption recovery",
+     "risk": "China regulatory/geopolitical risk; ADR/VIE structure; PDD/Douyin competition"},
+    {"ticker": "BIDU", "region": "US", "name": "Baidu (ADR)", "sector": "Consumer/Comm", "target": None,
+     "thesis": "China search + AI (Ernie) + Apollo autonomous driving; cheap on core-search earnings with AI/robotaxi optionality.",
+     "catalyst": "Ernie / AI-cloud monetization; Apollo Go robotaxi scaling",
+     "risk": "Search-ad weakness; China reg/geopolitics; ADR/VIE structure"},
+    {"ticker": "NIO", "region": "US", "name": "NIO (ADR)", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Chinese premium EV maker with a battery-swap network; volume + margin path still unproven. Speculative, cash-burn-sensitive.",
+     "catalyst": "Deliveries ramp (Onvo/Firefly sub-brands); gross-margin recovery",
+     "risk": "Cash burn / dilution; brutal China EV price war; ADR/geopolitical risk"},
+    {"ticker": "VEEV", "region": "US", "name": "Veeva Systems", "sector": "Software", "target": None,
+     "thesis": "Vertical-SaaS leader for life sciences (CRM + Vault); durable, highly profitable, FCF-rich compounder trading at a premium multiple.",
+     "catalyst": "Vault platform expansion; in-house CRM migration; new verticals",
+     "risk": "Premium valuation; pharma IT-budget cyclicality; large-customer concentration"},
 ]
 
 SECTOR_ORDER = [
