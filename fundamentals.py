@@ -124,13 +124,17 @@ FAMILIES: dict[str, dict[str, dict[str, bool]]] = {
 # (see compute_flags): falling revenue, heavy debt, negative FCF subtract points;
 # PEG < 1, net cash, ROIC > 20% add points. Cheapness alone finds value traps;
 # quality alone overpays — the intersection is where the edge historically lives.
+# Moat is folded into every lens (durability of returns is a positive everywhere):
+# weight 0.5 in the quality/value/safety lenses, a lighter 0.25 in growth/momentum
+# (young growth/momentum names often haven't established a moat yet), and 1.0 in the
+# dedicated Wide-Moat lens.
 LENSES: dict[str, dict[str, float]] = {
-    "QARP (Underv. Quality)": {"Value": 1.0, "Quality": 1.0, "Safety": 0.75, "Growth": 0.25},
-    "Blended (V+Q+M)":     {"Value": 1.0, "Quality": 1.0, "Momentum": 1.0},
-    "Value / Quality":     {"Value": 1.0, "Quality": 1.0},
-    "Growth / Asymmetric": {"Growth": 1.5, "Quality": 0.5, "Momentum": 0.5},
-    "Momentum":            {"Momentum": 1.0, "Quality": 0.5, "Value": 0.5},
-    "Safety / Quality":    {"Safety": 1.0, "Quality": 1.0, "Value": 0.5},
+    "QARP (Underv. Quality)": {"Value": 1.0, "Quality": 1.0, "Safety": 0.75, "Growth": 0.25, "Moat": 0.5},
+    "Blended (V+Q+M)":     {"Value": 1.0, "Quality": 1.0, "Momentum": 1.0, "Moat": 0.5},
+    "Value / Quality":     {"Value": 1.0, "Quality": 1.0, "Moat": 0.5},
+    "Growth / Asymmetric": {"Growth": 1.5, "Quality": 0.5, "Momentum": 0.5, "Moat": 0.25},
+    "Momentum":            {"Momentum": 1.0, "Quality": 0.5, "Value": 0.5, "Moat": 0.25},
+    "Safety / Quality":    {"Safety": 1.0, "Quality": 1.0, "Value": 0.5, "Moat": 0.5},
     "Wide-Moat Compounders": {"Moat": 1.0, "Quality": 0.5, "Value": 0.5},
 }
 DEFAULT_LENS = "QARP (Underv. Quality)"

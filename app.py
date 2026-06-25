@@ -853,7 +853,9 @@ PEG < 1 (+6), P/S < 2 with growing revenue (+4), ROIC > 20% (+5), net cash (+4).
 **Why QARP is the default lens:** cheapness alone finds value traps (cheap because dying); quality alone
 overpays. The most evidence-backed simple recipe — Greenblatt's Magic Formula and the academic
 quality-minus-junk literature — is to demand **both**: high earnings/FCF yield AND high ROIC, with a clean
-balance sheet. QARP = Value 1.0 × Quality 1.0 × Safety 0.75 × Growth 0.25, flag-adjusted.
+balance sheet. QARP = Value 1.0 × Quality 1.0 × Safety 0.75 × Growth 0.25 × Moat 0.5, flag-adjusted.
+*Moat is now folded into every lens* (0.5 in quality/value/safety lenses, 0.25 in growth/momentum, 1.0 in
+the Wide-Moat lens), so durable franchises get credit no matter how you rank.
 
 **Caveats.**
 - Not financial advice. This ranks **past reported data** — factor premia are real but noisy and can
