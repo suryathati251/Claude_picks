@@ -80,7 +80,7 @@ GROWTH_WATCHLIST = [
     {"ticker": "ALAB", "region": "US", "name": "Astera Labs", "sector": "Hypergrowth", "target": None,
      "thesis": "AI connectivity silicon (PCIe/CXL retimers, Scorpio switches); ~90% revenue growth, S&P 500 candidate.",
      "catalyst": "Scorpio ramp with next-gen accelerators", "risk": "Rich multiple; hyperscaler design-win concentration"},
-    {"ticker": "CRDO", "region": "US", "name": "Credo Technology", "sector": "Hypergrowth", "target": None,
+    {"ticker": "CRDO", "region": "US", "name": "Credo Technology", "sector": "AI/Semis", "target": None,
      "thesis": "AI data-center connectivity (AECs/SerDes); ~150% revenue growth riding back-end network buildout.",
      "catalyst": "New hyperscaler qualifications; 800G/1.6T cycles", "risk": "Customer concentration; AI-capex sensitivity"},
 

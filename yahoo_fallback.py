@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fundamentals import edge_net_debt_ebitda, edge_interest_coverage
+from fundamentals import edge_net_debt_ebitda, edge_interest_coverage, moat_metrics
 
 logger = logging.getLogger("yahoo_fallback")
 
@@ -180,6 +180,18 @@ def _row_prev(df, *names) -> Optional[float]:
     return None
 
 
+def _row_all(df, *names) -> list:
+    """All yearly values for the first matching row label, most-recent-first."""
+    if df is None or getattr(df, "empty", True):
+        return []
+    norm = {str(idx).replace(" ", "").lower(): idx for idx in df.index}
+    for name in names:
+        idx = norm.get(name.replace(" ", "").lower())
+        if idx is not None:
+            return [_f(v) for v in df.loc[idx].tolist()]
+    return []
+
+
 def fetch_fundamentals_yahoo(symbol: str, market_cap: Optional[float] = None) -> Optional[dict]:
     """Build fundamentals.py's metric dict from Yahoo annual statements.
     Returns None on total failure; otherwise a dict (values may be None)."""
@@ -249,8 +261,18 @@ def fetch_fundamentals_yahoo(symbol: str, market_cap: Optional[float] = None) ->
         "net_debt_ebitda": None,
         "interest_coverage": None,
         "gross_profitability": (gp / total_assets) if (gp is not None and total_assets and total_assets > 0) else None,
+        "gross_margin_avg": None, "margin_stability": None, "growth_consistency": None,
         "source": "yahoo",
     }
+
+    # Moat durability — from the multi-year income statement (most-recent-first).
+    revs_all = _row_all(inc, "Total Revenue", "TotalRevenue", "Operating Revenue")
+    gps_all = _row_all(inc, "Gross Profit")
+    ops_all = _row_all(inc, "Operating Income", "EBIT")
+    yr_gm = [(g / r if (g is not None and r) else None) for g, r in zip(gps_all, revs_all)]
+    yr_om = [(o / r if (o is not None and r) else None) for o, r in zip(ops_all, revs_all)]
+    out["gross_margin_avg"], out["margin_stability"], out["growth_consistency"] = \
+        moat_metrics(yr_gm, yr_om, revs_all)
 
     if rev is not None and prev_rev:
         out["rev_growth"] = (rev - prev_rev) / abs(prev_rev)

@@ -73,7 +73,7 @@ SYMBOLS = [item["ticker"] for item in WATCHLIST]
 SECTORS = {item["ticker"]: item["sector"] for item in WATCHLIST}
 
 # Family -> short column label shown in the table.
-FAM_ABBR = {"Value": "V", "Quality": "Q", "Growth": "G", "Momentum": "M", "Safety": "S"}
+FAM_ABBR = {"Value": "V", "Quality": "Q", "Growth": "G", "Momentum": "M", "Safety": "S", "Moat": "Moat"}
 
 FMP_BASE = "https://financialmodelingprep.com/stable"
 QUOTE_TTL = 6 * 60 * 60
@@ -424,7 +424,10 @@ def build_dataframe(quotes, fundamentals, fam_scores) -> pd.DataFrame:
             "Mkt Cap": q.get("marketCap"), "Currency": currency,
             # family sub-scores (lens-independent)
             "V": sub("Value"), "Q": sub("Quality"), "G": sub("Growth"),
-            "M": sub("Momentum"), "S": sub("Safety"),
+            "M": sub("Momentum"), "S": sub("Safety"), "Moat": sub("Moat"),
+            # moat raw signals (CSV / detail)
+            "GM 5y %": pct("gross_margin_avg"), "Margin Stab %": pct("margin_stability"),
+            "Growth Consist %": pct("growth_consistency"),
             # raw metrics
             "Earnings Yld %": pct("earnings_yield"), "ROIC %": pct("roic"),
             "Rev Growth %": pct("rev_growth"), "Gross Mgn %": pct("gross_margin"),
@@ -693,7 +696,7 @@ if query:
         tag = f"_{look_sector}_" if is_member else "_(not in watchlist — ranked vs whole universe)_"
         st.markdown(f"### {look_name} · {query}  ·  {tag}")
 
-        cols = st.columns(7)
+        cols = st.columns(8)
         def _sub(f):
             v = look_sub.get(f); return f"{v*100:.0f}" if v is not None else "—"
         cols[0].metric(f"Score · {rank_mode.split(' ')[0]}", f"{comp:.0f}" if comp is not None else "—")
@@ -702,7 +705,8 @@ if query:
         cols[3].metric("Growth", _sub("Growth"))
         cols[4].metric("Momentum", _sub("Momentum"))
         cols[5].metric("Safety", _sub("Safety"))
-        cols[6].metric("Price", fmt_price(look_quote.get("price"), ccy),
+        cols[6].metric("Moat", _sub("Moat"))
+        cols[7].metric("Price", fmt_price(look_quote.get("price"), ccy),
                        f"{look_quote.get('changePercentage'):+.2f}%"
                        if look_quote.get("changePercentage") is not None else None)
 
@@ -718,6 +722,8 @@ if query:
             "Rule40": _r("rule_of_40", 0), "12-1m": _p("mom_12_1"),
             "P/S": _r("ps_ratio", 1), "PEG": _r("peg", 2), "D/E": _r("debt_equity", 2),
             "Net Debt/EBITDA": _r("net_debt_ebitda", 1), "Int Cov": _r("interest_coverage", 1),
+            "GM 5y": _p("gross_margin_avg"), "Margin Stab": _p("margin_stability"),
+            "Growth Consist": _p("growth_consistency"),
             "Mkt Cap": fmt_mcap(look_quote.get("marketCap"), ccy),
         }
         st.dataframe(pd.DataFrame([raw]), width="stretch", hide_index=True)
@@ -745,6 +751,7 @@ def render_display(row):
         "Score": _i(row["Score"]),
         "Cov": f"{int(row['Cov'])}/{int(row['CovN'])}" if pd.notna(row["Cov"]) else "—",
         "V": _i(row["V"]), "Q": _i(row["Q"]), "G": _i(row["G"]), "M": _i(row["M"]), "S": _i(row["S"]),
+        "Moat": _i(row["Moat"]),
         "Price": fmt_price(row["Price"], row["Currency"]),
         "Day %": f"{row['Day %']:+.2f}%" if pd.notna(row["Day %"]) else "—",
         "Earn Yld": f"{row['Earnings Yld %']:.1f}%" if pd.notna(row["Earnings Yld %"]) else "—",
@@ -789,7 +796,7 @@ def color_signed(val):
 
 
 styler = display.style
-for c in ["Score", "V", "Q", "G", "M", "S"]:
+for c in ["Score", "V", "Q", "G", "M", "S", "Moat"]:
     styler = styler.map(color_score, subset=[c])
 styler = (styler.map(color_signed, subset=["Day %"])
                 .map(color_signed, subset=["Rev Grw"])
@@ -813,13 +820,17 @@ st.download_button("📥 Download current view as CSV", data=csv,
 with st.expander("ℹ️ How the score works & caveats", expanded=False):
     st.markdown(
         f"""
-**Five sub-scores, each 0–100 (percentile vs peers):**
+**Six sub-scores, each 0–100 (percentile vs peers):**
 
 - **V — Value:** earnings & FCF yield · low P/S · low PEG (cheapness, growth-adjusted).
 - **Q — Quality:** ROIC + **gross profitability (gross profit ÷ assets, Novy-Marx)** · margins.
 - **G — Growth:** revenue growth · EPS growth · Rule-of-40.
 - **M — Momentum:** **real 12-minus-1-month return** · 52-week range position · price vs 200-day avg.
 - **S — Safety:** Piotroski-style health · leverage (D/E + net-debt/EBITDA) · interest coverage.
+- **Moat:** the *quantitative fingerprint* of a durable edge — sustained high ROIC + a high **5-year
+  average gross margin** (pricing power) + **margin stability** and **revenue-growth consistency** over
+  ~5 years. A true moat is qualitative; this captures what it leaves in the numbers. Rank by it with the
+  **Wide-Moat Compounders** lens. (Uses 5 years of statements — no extra API calls.)
 
 **Logic (how a sub-score is built):**
 

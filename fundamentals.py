@@ -28,6 +28,7 @@ response raises ``FMPRateLimitError`` so app.py can stop early and keep cache.
 from __future__ import annotations
 
 import logging
+import statistics
 from collections import defaultdict
 from typing import Optional
 
@@ -56,6 +57,8 @@ METRIC_KEYS = (
     "debt_equity", "net_debt_ebitda", "interest_coverage",
     # quality: Novy-Marx gross profitability (gross profit / total assets)
     "gross_profitability",
+    # moat: durability signals over ~5 years (no extra API calls)
+    "gross_margin_avg", "margin_stability", "growth_consistency",
 )
 
 # Candidate FMP field names for the few metrics we still read pre-computed.
@@ -99,6 +102,16 @@ FAMILIES: dict[str, dict[str, dict[str, bool]]] = {
         "leverage": {"debt_equity": False, "net_debt_ebitda": False},  # both leverage -> one concept
         "coverage": {"interest_coverage": True},
     },
+    # Economic MOAT = the quantitative fingerprint of a durable competitive edge:
+    # sustained high returns on capital + durable pricing power + low volatility.
+    # (roic is shared with Quality on purpose — it IS the core moat signal — but the
+    # multi-year LEVEL + STABILITY metrics are what make Moat distinct from Quality.)
+    "Moat": {
+        "returns_level": {"roic": True},                            # sustained high returns on capital
+        "pricing_power": {"gross_margin_avg": True},                # durable 5-yr gross margin
+        "durability":    {"margin_stability": True,                 # low margin volatility
+                          "growth_consistency": True},              # consistent revenue growth
+    },
 }
 
 # Lens = weights over families. All sub-scores always display; the lens only sets
@@ -118,6 +131,7 @@ LENSES: dict[str, dict[str, float]] = {
     "Growth / Asymmetric": {"Growth": 1.5, "Quality": 0.5, "Momentum": 0.5},
     "Momentum":            {"Momentum": 1.0, "Quality": 0.5, "Value": 0.5},
     "Safety / Quality":    {"Safety": 1.0, "Quality": 1.0, "Value": 0.5},
+    "Wide-Moat Compounders": {"Moat": 1.0, "Quality": 0.5, "Value": 0.5},
 }
 DEFAULT_LENS = "QARP (Underv. Quality)"
 
@@ -225,6 +239,39 @@ def _first_present(record, candidates, metric, symbol, warn=True):
     return val
 
 
+def moat_metrics(gross_margins: list, operating_margins: list, revenues: list):
+    """Durability signals for the Moat family, from several years of statements.
+
+    Returns (gross_margin_avg, margin_stability, growth_consistency):
+    * gross_margin_avg  — mean gross margin (pricing-power LEVEL).
+    * margin_stability  — 0..1, 1 = rock-steady margins. = 1 − mean coefficient-of-
+                          variation of gross & operating margins (≥3 yrs needed).
+    * growth_consistency— 0..1, fraction of year-over-year revenue changes that were
+                          positive (durable demand; ≥3 yrs needed).
+    None when there isn't enough history to judge.
+    """
+    gm = [x for x in gross_margins if x is not None]
+    om = [x for x in operating_margins if x is not None]
+    revs = [x for x in revenues if x is not None]
+
+    gross_margin_avg = (sum(gm) / len(gm)) if gm else None
+
+    covs = []
+    for series in (gm, om):
+        if len(series) >= 3:
+            m = sum(series) / len(series)
+            if m != 0:
+                covs.append(statistics.pstdev(series) / abs(m))
+    margin_stability = max(0.0, 1.0 - sum(covs) / len(covs)) if covs else None
+
+    growth_consistency = None
+    if len(revs) >= 3:                       # revs are most-recent-first
+        deltas = [revs[i] - revs[i + 1] for i in range(len(revs) - 1)]
+        growth_consistency = sum(1 for d in deltas if d > 0) / len(deltas)
+
+    return gross_margin_avg, margin_stability, growth_consistency
+
+
 # Number of FMP calls fetch_fundamentals makes per ticker (used for budgeting).
 CALLS_PER_TICKER = 3
 
@@ -246,9 +293,10 @@ def fetch_fundamentals(symbol: str, api_key: str, market_cap: Optional[float] = 
         out["earnings_yield"] = _first_present(km, _EY_KEYS, "earnings_yield", symbol, warn=False)
         out["fcf_margin"]     = _first_present(km, _FCFM_KEYS, "fcf_margin", symbol, warn=False)
 
-    # 2) income-statement (annual, last 2) — margins, growth, safety.
+    # 2) income-statement (annual, last 5) — margins, growth, safety + moat durability.
+    #    5 years (vs 2) costs NO extra call and powers the Moat stability metrics.
     inc = _get(f"{FMP_BASE}/income-statement",
-               {"symbol": symbol, "period": "annual", "limit": 2, "apikey": api_key},
+               {"symbol": symbol, "period": "annual", "limit": 5, "apikey": api_key},
                symbol, "income-statement")
     rows = inc if isinstance(inc, list) else ([inc] if isinstance(inc, dict) and inc else [])
     ebitda = None
@@ -310,6 +358,18 @@ def fetch_fundamentals(symbol: str, api_key: str, market_cap: Optional[float] = 
             checks.append(out["operating_margin"] >= om_prev)
         if checks:
             out["safety"] = sum(1 for c in checks if c) / len(checks)
+
+        # Moat durability — multi-year margins + revenue from the SAME 5-yr call.
+        yr_gm, yr_om, yr_rev = [], [], []
+        for r in rows:
+            rv = _num(r, "revenue")
+            yr_rev.append(rv)
+            if rv and rv != 0:
+                g_ = _num(r, "grossProfit"); o_ = _num(r, "operatingIncome")
+                yr_gm.append(g_ / rv if g_ is not None else None)
+                yr_om.append(o_ / rv if o_ is not None else None)
+        out["gross_margin_avg"], out["margin_stability"], out["growth_consistency"] = \
+            moat_metrics(yr_gm, yr_om, yr_rev)
 
     # 3) balance-sheet (annual, latest) — leverage for the Safety family & flags.
     bs = _first_record(_get(f"{FMP_BASE}/balance-sheet-statement",

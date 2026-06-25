@@ -389,6 +389,16 @@ WATCHLIST = [
      "thesis": "Highly leveraged homebuilder; deep-value / turnaround with a large discount to book and high rate sensitivity. Speculative small-cap.",
      "catalyst": "Rate cuts improving affordability; debt reduction; community-count growth",
      "risk": "Heavy leverage; rate / affordability sensitivity; cyclical small-cap volatility"},
+
+    # ---- ADDED on request: IREN ----  (CRDO already present in watchlist_growth.py)
+    {"ticker": "IREN", "region": "US", "name": "IREN Limited", "sector": "AI/Semis", "target": None,
+     "thesis": "Renewables-powered data-center operator pivoting from Bitcoin mining to AI/HPC (GPU) cloud. Speculative AI-infrastructure + crypto hybrid.",
+     "catalyst": "AI/HPC contract wins; GPU-cloud ramp; Bitcoin price",
+     "risk": "Bitcoin/crypto price exposure; capex-heavy buildout; execution + dilution risk"},
+    {"ticker": "GLW", "region": "US", "name": "Corning", "sector": "AI/Semis", "target": None,
+     "thesis": "Specialty-glass & optical-fiber maker; AI data-center optical connectivity is the current growth driver, on top of display, Gorilla Glass and life-sciences segments.",
+     "catalyst": "Optical-fiber demand for AI data centers; enterprise/carrier capex; margin recovery",
+     "risk": "Diversified-cyclical end markets (display, smartphone); capital-intensive; FX"},
 ]
 
 SECTOR_ORDER = [
