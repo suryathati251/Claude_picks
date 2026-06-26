@@ -435,7 +435,7 @@ def build_dataframe(quotes, fundamentals, fam_scores) -> pd.DataFrame:
             "Safety %": pct("safety"),
             "Mom 12-1 %": pct("mom_12_1"), "Gross Prof %": pct("gross_profitability"),
             "P/S": fund.get("ps_ratio"), "PEG": fund.get("peg"),
-            "D/E": fund.get("debt_equity"),
+            "EV/EBIT": fund.get("ev_ebit"), "D/E": fund.get("debt_equity"),
             "FlagAdj": flag_adj, "Flags": " · ".join(flag_list) if flag_list else "",
             "Target": target, "Target OK": target_ok, "Upside %": upside,
             "Thesis": item["thesis"],
@@ -720,7 +720,9 @@ if query:
             "Gross Mgn": _p("gross_margin"), "Gross Prof": _p("gross_profitability"),
             "Op Mgn": _p("operating_margin"),
             "Rule40": _r("rule_of_40", 0), "12-1m": _p("mom_12_1"),
-            "P/S": _r("ps_ratio", 1), "PEG": _r("peg", 2), "D/E": _r("debt_equity", 2),
+            "P/S": _r("ps_ratio", 1), "PEG": _r("peg", 2),
+            "EV/EBIT": ("n/m" if (look_fund.get("ev_ebit") or 0) >= 999 else _r("ev_ebit", 1)),
+            "D/E": _r("debt_equity", 2),
             "Net Debt/EBITDA": _r("net_debt_ebitda", 1), "Int Cov": _r("interest_coverage", 1),
             "GM 5y": _p("gross_margin_avg"), "Margin Stab": _p("margin_stability"),
             "Growth Consist": _p("growth_consistency"),
@@ -761,6 +763,8 @@ def render_display(row):
         "FCF Yld": f"{row['FCF Yld %']:.1f}%" if pd.notna(row["FCF Yld %"]) else "—",
         "P/S": f"{row['P/S']:.1f}" if pd.notna(row["P/S"]) else "—",
         "PEG": f"{row['PEG']:.2f}" if pd.notna(row["PEG"]) else "—",
+        "EV/EBIT": ("n/m" if (pd.notna(row["EV/EBIT"]) and row["EV/EBIT"] >= 999)
+                    else (f"{row['EV/EBIT']:.1f}" if pd.notna(row["EV/EBIT"]) else "—")),
         "D/E": f"{row['D/E']:.2f}" if pd.notna(row["D/E"]) else "—",
         "Flags": row["Flags"] if row["Flags"] else "—",
         "12-1m": f"{row['Mom 12-1 %']:+.0f}%" if pd.notna(row["Mom 12-1 %"]) else "—",
@@ -822,7 +826,7 @@ with st.expander("ℹ️ How the score works & caveats", expanded=False):
         f"""
 **Six sub-scores, each 0–100 (percentile vs peers):**
 
-- **V — Value:** earnings & FCF yield · low P/S · low PEG (cheapness, growth-adjusted).
+- **V — Value:** earnings yield + **EV/EBIT** (capital-structure-aware) · FCF yield · low P/S · low PEG.
 - **Q — Quality:** ROIC + **gross profitability (gross profit ÷ assets, Novy-Marx)** · margins.
 - **G — Growth:** revenue growth · EPS growth · Rule-of-40.
 - **M — Momentum:** **real 12-minus-1-month return** · 52-week range position · price vs 200-day avg.

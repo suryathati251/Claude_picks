@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fundamentals import edge_net_debt_ebitda, edge_interest_coverage, moat_metrics
+from fundamentals import edge_net_debt_ebitda, edge_interest_coverage, edge_ev_ebit, moat_metrics
 
 logger = logging.getLogger("yahoo_fallback")
 
@@ -260,6 +260,7 @@ def fetch_fundamentals_yahoo(symbol: str, market_cap: Optional[float] = None) ->
         "debt_equity": None,
         "net_debt_ebitda": None,
         "interest_coverage": None,
+        "ev_ebit": None,
         "gross_profitability": (gp / total_assets) if (gp is not None and total_assets and total_assets > 0) else None,
         "gross_margin_avg": None, "margin_stability": None, "growth_consistency": None,
         "source": "yahoo",
@@ -295,6 +296,7 @@ def fetch_fundamentals_yahoo(symbol: str, market_cap: Optional[float] = None) ->
     # Edge-handled leverage/coverage (net cash -> good; EBITDA<=0 -> worst; debt-free -> strong coverage)
     out["net_debt_ebitda"] = edge_net_debt_ebitda(total_debt, cash, ebitda)
     out["interest_coverage"] = edge_interest_coverage(opi, int_exp, total_debt)
+    out["ev_ebit"] = edge_ev_ebit(market_cap, total_debt, cash, opi)
 
     if out["rev_growth"] is not None:
         margin = out["fcf_margin"] if out["fcf_margin"] is not None else out["operating_margin"]

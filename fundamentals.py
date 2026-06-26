@@ -53,7 +53,7 @@ METRIC_KEYS = (
     "gross_margin", "operating_margin", "net_margin", "fcf_margin", "rule_of_40",
     "mom_52w", "mom_ma200", "mom_12_1", "safety",
     # valuation / leverage additions (QARP)
-    "ps_ratio", "peg", "eps_growth",
+    "ps_ratio", "peg", "eps_growth", "ev_ebit",
     "debt_equity", "net_debt_ebitda", "interest_coverage",
     # quality: Novy-Marx gross profitability (gross profit / total assets)
     "gross_profitability",
@@ -80,9 +80,10 @@ _FCFM_KEYS = ["freeCashFlowMarginTTM", "freeCashFlowMargin"]
 # LOW raw value should score high (P/S, PEG, leverage).
 FAMILIES: dict[str, dict[str, dict[str, bool]]] = {
     "Value": {
-        "yield":      {"earnings_yield": True, "fcf_yield": True},   # cash/earnings cheapness
-        "sales":      {"ps_ratio": False},                           # sales cheapness
-        "growth_adj": {"peg": False},                                # growth-adjusted cheapness
+        "earnings":   {"earnings_yield": True, "ev_ebit": False},  # earnings cheapness: equity yield + EV/EBIT
+        "cashflow":   {"fcf_yield": True},                          # cash-flow cheapness
+        "sales":      {"ps_ratio": False},                          # sales cheapness
+        "growth_adj": {"peg": False},                               # growth-adjusted cheapness
     },
     "Quality": {
         "returns": {"roic": True, "gross_profitability": True},      # returns on capital/assets
@@ -180,6 +181,20 @@ def edge_interest_coverage(opi: Optional[float], int_exp: Optional[float],
     if (total_debt or 0.0) <= 0.0:
         return 50.0   # effectively unleveraged -> excellent coverage
     return None       # has debt but interest figure missing -> leave unranked
+
+
+def edge_ev_ebit(market_cap: Optional[float], total_debt: Optional[float],
+                 cash: Optional[float], ebit: Optional[float]) -> Optional[float]:
+    """EV/EBIT (lower = cheaper). EV = market cap + debt − cash. Negative/zero EBIT
+    (unprofitable) -> a high sentinel so it ranks as 'expensive', not blank."""
+    if market_cap is None or ebit is None:
+        return None
+    ev = market_cap + (total_debt or 0.0) - (cash or 0.0)
+    if ebit <= 0:
+        return 999.0          # unprofitable -> worst (expensive)
+    if ev <= 0:
+        return None           # net-cash quirk (EV<=0) -> can't rank meaningfully
+    return ev / ebit
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +320,7 @@ def fetch_fundamentals(symbol: str, api_key: str, market_cap: Optional[float] = 
     rows = inc if isinstance(inc, list) else ([inc] if isinstance(inc, dict) and inc else [])
     ebitda = None
     gp = None
+    opi = None
     if rows:
         cur = rows[0]
         rev = _num(cur, "revenue"); gp = _num(cur, "grossProfit")
@@ -398,6 +414,8 @@ def fetch_fundamentals(symbol: str, api_key: str, market_cap: Optional[float] = 
         # Gross profitability (Novy-Marx): gross profit / total assets.
         if gp is not None and total_assets and total_assets > 0:
             out["gross_profitability"] = gp / total_assets
+        # EV/EBIT — capital-structure-aware cheapness (EV = mktcap + debt − cash).
+        out["ev_ebit"] = edge_ev_ebit(market_cap, total_debt, cash, opi)
 
     # Rule of 40 = revenue growth % + (FCF margin if present, else operating margin) %.
     if out["rev_growth"] is not None:
