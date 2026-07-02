@@ -429,6 +429,28 @@ WATCHLIST = [
      "thesis": "Visual-discovery platform monetizing shopping intent via ads; user growth + AI-driven ad relevance.",
      "catalyst": "ARPU growth (esp. international); shopping formats; third-party ads (Amazon)",
      "risk": "Ad-cycle sensitivity; competition (Meta/TikTok); engagement swings"},
+
+    # ---- ADDED on request: CLOV / ZETA / OSCR ----
+    # NOTE: CLOV & OSCR are health INSURERS — ROIC / EV-EBIT / margins are imperfect for
+    # insurers (like banks); sector-neutral ranking vs Healthcare peers softens this.
+    {"ticker": "CLOV", "region": "US", "name": "Clover Health", "sector": "Healthcare", "target": None,
+     "thesis": "Medicare-Advantage insurtech; Clover Assistant AI + Counterpart Health SaaS pivot. Speculative small-cap turning profitable.",
+     "catalyst": "MA membership growth; SaaS licensing of Clover Assistant; medical-cost-ratio control",
+     "risk": "Insurer economics (MCR); small-cap volatility; CMS/regulatory risk"},
+    {"ticker": "ZETA", "region": "US", "name": "Zeta Global", "sector": "Software", "target": None,
+     "thesis": "AI-driven marketing / data cloud; fast revenue growth via data + agentic-AI ad tools, profitability improving.",
+     "catalyst": "Agentic-AI adoption; large-customer growth; scaled-customer ARPU",
+     "risk": "Adtech cyclicality; past short-seller scrutiny; SBC dilution"},
+    {"ticker": "OSCR", "region": "US", "name": "Oscar Health", "sector": "Healthcare", "target": None,
+     "thesis": "Tech-driven ACA (individual) health insurer reaching profitability; membership growth + '+Oscar' platform. Speculative.",
+     "catalyst": "ACA enrollment growth; medical-loss-ratio improvement; +Oscar platform",
+     "risk": "ACA subsidy/policy risk; medical-cost ratio; insurer cyclicality"},
+
+    # ---- ADDED on request: FIG ----  (ZETA already added previously)
+    {"ticker": "FIG", "region": "US", "name": "Figma", "sector": "Software", "target": None,
+     "thesis": "Collaborative design & product-development platform (Figma, FigJam, Dev Mode) extending into AI-assisted design. Recently public — history may be thin.",
+     "catalyst": "AI design features (Make/Sites); enterprise seat expansion; net-retention",
+     "risk": "Rich valuation; competition (Adobe/Canva); newly listed; SBC dilution"},
 ]
 
 SECTOR_ORDER = [
