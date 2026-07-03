@@ -451,6 +451,20 @@ WATCHLIST = [
      "thesis": "Collaborative design & product-development platform (Figma, FigJam, Dev Mode) extending into AI-assisted design. Recently public — history may be thin.",
      "catalyst": "AI design features (Make/Sites); enterprise seat expansion; net-retention",
      "risk": "Rich valuation; competition (Adobe/Canva); newly listed; SBC dilution"},
+
+    # ---- ADDED on request: T (AT&T) / VZ / PFE ----  (large-cap value/income)
+    {"ticker": "T", "region": "US", "name": "AT&T", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Telecom post-restructuring; fiber + wireless subscriber growth funding a high dividend and steady deleveraging. Value/income.",
+     "catalyst": "Fiber expansion; postpaid net adds; debt paydown",
+     "risk": "High debt load; wireless price competition; capex intensity"},
+    {"ticker": "VZ", "region": "US", "name": "Verizon", "sector": "Consumer/Comm", "target": None,
+     "thesis": "Largest US wireless carrier; high dividend yield and steady FCF, modest growth. Value/income.",
+     "catalyst": "Wireless ARPU; fixed-wireless broadband; debt reduction",
+     "risk": "Heavy debt; competition (T-Mobile/AT&T); low growth"},
+    {"ticker": "PFE", "region": "US", "name": "Pfizer", "sector": "Healthcare", "target": None,
+     "thesis": "Big pharma at a low multiple post-COVID normalization; oncology (Seagen) pipeline + cost cuts. Value/turnaround with a high dividend.",
+     "catalyst": "Oncology pipeline; cost/margin program; new launches",
+     "risk": "Patent cliffs (2028+); COVID-revenue rolloff; pipeline execution"},
 ]
 
 SECTOR_ORDER = [
