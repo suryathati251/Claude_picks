@@ -815,6 +815,8 @@ st.dataframe(
                    "Flags": st.column_config.TextColumn(width="medium"),
                    "Name": st.column_config.TextColumn(width="medium")},
 )
+st.caption("🟢 = positive signal · 🔴 = risk. Flags adjust the Score (±, capped at −25/+15). "
+           "Full list under **ℹ️ How the score works & caveats** below.")
 
 st.divider()
 csv = view.drop(columns=["Target OK"], errors="ignore").to_csv(index=False).encode()
@@ -848,11 +850,25 @@ with st.expander("ℹ️ How the score works & caveats", expanded=False):
 then applies a gentle **Safety gate** (fragile balance sheets keep ≥85% of their score, so a cheap-but-shaky
 name can't top a momentum or growth lens) and the absolute red/green **flags** below.
 
-**Flags (absolute checks, applied on top of the relative ranks):** percentiles only say "better than peers" —
-flags catch what's bad or great in absolute terms. Red flags subtract points: falling revenue (−6 to −12),
-D/E > 1 or 2 (−4/−8), net debt > 3–4× EBITDA (−4/−8), interest coverage < 2× (−6), negative FCF (−5),
-unprofitable (−4), and high-debt-plus-falling-revenue (−5, the classic value trap). Green flags add points:
-PEG < 1 (+6), P/S < 2 with growing revenue (+4), ROIC > 20% (+5), net cash (+4). Capped at −25/+15.
+**Flags — what the icons mean.** Percentile scores only say "better than peers"; flags catch what's good or
+bad in *absolute* terms and nudge the Score (total capped at −25/+15). **🟢 = positive, 🔴 = risk.**
+
+*🟢 positives (add points):*
+
+- **🟢 cheap vs growth (PEG < 1)** — price is low relative to its earnings-growth rate. *(+6)*
+- **🟢 cheap on sales, still growing (P/S < 2)** — inexpensive on revenue while revenue is still rising. *(+4)*
+- **🟢 high returns on capital (ROIC > 20%)** — earns unusually high returns — a quality/moat sign. *(+5)*
+- **🟢 strong balance sheet (net cash)** — more cash than debt. *(+4)*
+
+*🔴 risks (subtract points):*
+
+- **🔴 revenue declining / falling >10%** — the top line is shrinking. *(−6 / −12)*
+- **🔴 elevated / high debt (D/E > 1 / > 2)** — a lot of debt relative to equity. *(−4 / −8)*
+- **🔴 leveraged / heavy leverage (net debt > 3× / 4× EBITDA)** — debt is large vs. earnings. *(−4 / −8)*
+- **🔴 thin interest coverage (< 2×)** — profits barely cover interest payments. *(−6)*
+- **🔴 burning cash (negative FCF)** — spending more cash than it generates. *(−5)*
+- **🔴 unprofitable (negative margin)** — losing money at the bottom line. *(−4)*
+- **🔴 value-trap risk (high debt + falling revenue)** — the dangerous combo of leverage and shrinking sales. *(−5)*
 
 **Why QARP is the default lens:** cheapness alone finds value traps (cheap because dying); quality alone
 overpays. The most evidence-backed simple recipe — Greenblatt's Magic Formula and the academic

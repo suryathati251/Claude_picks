@@ -553,52 +553,55 @@ def compute_flags(fund: dict) -> tuple[float, list[str]]:
     def m(key):
         return fund.get(key)
 
-    # ---- red flags ----
+    # Consistent traffic-light scheme: 🔴 = risk (subtracts points), 🟢 = positive
+    # (adds points). Each label is plain-English with the metric in parentheses.
+
+    # ---- 🔴 risk flags ----
     rg = m("rev_growth")
     if rg is not None and rg < 0:
         if rg < -0.10:
-            delta -= 12; flags.append("📉 revenue falling >10%")
+            delta -= 12; flags.append("🔴 revenue falling >10%")
         else:
-            delta -= 6; flags.append("📉 revenue declining")
+            delta -= 6; flags.append("🔴 revenue declining")
 
     de = m("debt_equity")
     nde = m("net_debt_ebitda")
     if de is not None and de > 2.0:
-        delta -= 8; flags.append("🏋️ D/E > 2")
+        delta -= 8; flags.append("🔴 high debt (D/E > 2)")
     elif de is not None and de > 1.0:
-        delta -= 4; flags.append("🏋️ D/E > 1")
+        delta -= 4; flags.append("🔴 elevated debt (D/E > 1)")
     if nde is not None and nde > 4.0:
-        delta -= 8; flags.append("🏋️ net debt > 4× EBITDA")
+        delta -= 8; flags.append("🔴 heavy leverage (net debt > 4× EBITDA)")
     elif nde is not None and nde > 3.0:
-        delta -= 4; flags.append("🏋️ net debt > 3× EBITDA")
+        delta -= 4; flags.append("🔴 leveraged (net debt > 3× EBITDA)")
 
     ic = m("interest_coverage")
     if ic is not None and ic < 2.0:
-        delta -= 6; flags.append("⚠️ interest coverage < 2×")
+        delta -= 6; flags.append("🔴 thin interest coverage (< 2×)")
 
     fcfy = m("fcf_yield")
     if fcfy is not None and fcfy < 0:
-        delta -= 5; flags.append("🔥 negative free cash flow")
+        delta -= 5; flags.append("🔴 burning cash (negative FCF)")
     nm = m("net_margin")
     if nm is not None and nm < 0:
-        delta -= 4; flags.append("🔻 unprofitable")
+        delta -= 4; flags.append("🔴 unprofitable (negative margin)")
 
     # extra danger when leverage meets shrinking revenue (the classic value trap)
     if (rg is not None and rg < 0) and ((de or 0) > 1.0 or (nde or 0) > 3.0):
-        delta -= 5; flags.append("☠️ high debt + falling revenue")
+        delta -= 5; flags.append("🔴 value-trap risk (high debt + falling revenue)")
 
-    # ---- green flags ----
+    # ---- 🟢 positive flags ----
     peg = m("peg")
     if peg is not None and 0 < peg < 1.0:
-        delta += 6; flags.append("💎 PEG < 1")
+        delta += 6; flags.append("🟢 cheap vs growth (PEG < 1)")
     ps = m("ps_ratio")
     if ps is not None and ps < 2.0 and (rg or 0) > 0.10:
-        delta += 4; flags.append("🟢 P/S < 2 with growing revenue")
+        delta += 4; flags.append("🟢 cheap on sales, still growing (P/S < 2)")
     roic = m("roic")
     if roic is not None and roic > 0.20:
-        delta += 5; flags.append("🏆 ROIC > 20%")
+        delta += 5; flags.append("🟢 high returns on capital (ROIC > 20%)")
     if ((nde is not None and nde < 0) or (de is not None and de < 0.10)):
-        delta += 4; flags.append("💰 net cash balance sheet")
+        delta += 4; flags.append("🟢 strong balance sheet (net cash)")
 
     return max(FLAG_PENALTY_CAP, min(FLAG_BONUS_CAP, delta)), flags
 
