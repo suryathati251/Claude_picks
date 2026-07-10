@@ -533,7 +533,7 @@ fam_scores = compute_family_scores(fundamentals, SECTORS)
 # ---------------------------------------------------------------------------
 mkt = cached_market_context(api_key)
 with st.container():
-    st.subheader("🌡️ Market conditions")
+    st.subheader("📊 Market conditions")
     st.caption("Context for **how** to deploy (position size · scaling · rebalancing) — **not** a buy/sell signal.")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("S&P 500", f"{mkt['index_price']:,.0f}" if mkt["index_price"] else "—",
