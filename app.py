@@ -537,13 +537,27 @@ with st.container():
     st.caption("Context for **how** to deploy (position size · scaling · rebalancing) — **not** a buy/sell signal.")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("S&P 500", f"{mkt['index_price']:,.0f}" if mkt["index_price"] else "—",
-              mkt["trend"] if mkt["trend"] != "unknown" else None)
-    c2.metric("vs 200-day avg", f"{mkt['pct_from_ma200']:+.1f}%" if mkt["pct_from_ma200"] is not None else "—")
-    c3.metric("Index 52w position", f"{mkt['index_52w_pos']:.0f}%" if mkt["index_52w_pos"] is not None else "—")
+              help="Current level of the S&P 500 index.")
+    c2.metric("vs 200-day avg", f"{mkt['pct_from_ma200']:+.1f}%" if mkt["pct_from_ma200"] is not None else "—",
+              help="How far the index sits above (+) or below (−) its 200-day moving average. "
+                   "Above = uptrend regime; the further above, the more 'stretched' it is.")
+    c3.metric("Index 52w position", f"{mkt['index_52w_pos']:.0f}%" if mkt["index_52w_pos"] is not None else "—",
+              help="Where the index sits in its 52-week range: 0% = 52-week LOW, 100% = 52-week HIGH. "
+                   "So 94% means it's near the top of the past year's range.")
     c4.metric("VIX (volatility)", f"{mkt['vix']:.1f}" if mkt["vix"] else "—",
-              mkt["vix_label"] if mkt["vix_label"] != "unknown" else None)
+              help="The 'fear gauge' — expected 30-day volatility. Under ~15 = calm, 20–28 = elevated, 40+ = extreme.")
+
+    # Plain-language regime line (clearer than st.metric's up/down arrow, and kept
+    # neutral — this describes the environment, it is not a buy/sell signal).
+    trend = mkt.get("trend", "unknown")
+    if trend != "unknown":
+        above = "above" in trend
+        st.caption(
+            f"**Trend regime:** {'📈' if above else '📉'} the S&P 500 is **{'above' if above else 'below'}** "
+            f"its 200-day average ({'uptrend' if above else 'downtrend'}). Describes the environment — not a buy/sell call."
+        )
     if mkt.get("vix_context"):
-        st.caption(f"**Volatility regime — {mkt['vix_label']}:** {mkt['vix_context']}")
+        st.caption(f"**Volatility — {mkt['vix_label']}:** {mkt['vix_context']}")
     for note in mkt.get("notes", []):
         st.info(note)
 st.divider()
