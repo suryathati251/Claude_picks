@@ -64,6 +64,8 @@ from fundamentals import (
 from yahoo_fallback import (
     fetch_quotes_yahoo, fetch_fundamentals_yahoo, fetch_momentum_yahoo, HAVE_YF,
 )
+from tenx_universe import SCAN_SYMBOLS, SCAN_NAMES, SCAN_SECTORS
+from tenx_radar import fetch_quarterly_yahoo, compute_tenx_metrics, tenx_score
 import market_risk
 
 _seen = {item["ticker"] for item in _BASE_WATCHLIST}
@@ -81,6 +83,9 @@ FUND_TTL = 14 * 24 * 60 * 60
 YF_FUND_TTL = 3 * 24 * 60 * 60   # Yahoo-sourced fundamentals expire sooner so FMP can replace them
 MARKET_TTL = 6 * 60 * 60
 MOM_TTL = 24 * 60 * 60           # 12-1 momentum moves slowly; refresh once a day
+TENX_TTL = 21 * 24 * 60 * 60     # quarterly revenue data — a new print lands ~every 90d
+TENX_RETRY_TTL = 24 * 60 * 60    # failed quarterly fetches retry after a day
+SCAN_QUOTE_TTL = 24 * 60 * 60    # scan-universe quotes only need daily freshness
 
 # Budget is in TICKERS per refresh; each ticker costs CALLS_PER_TICKER FMP calls.
 # Default keeps one full refresh comfortably inside the 250-calls/day free tier
@@ -90,6 +95,16 @@ FUND_BUDGET = int(os.getenv("FMP_FUND_BUDGET", str(_DEFAULT_BUDGET)))
 YF_BUDGET = int(os.getenv("YF_FUND_BUDGET", "60"))  # Yahoo fallback fills per run
 BATCH_SIZE = 50
 MAX_WORKERS = 3
+
+# ---- 10x Radar universe: watchlist + S&P 500 + Nasdaq-100 + curated extras ----
+# Quarterly data comes from Yahoo (keyless — zero FMP quota); scan-universe quotes
+# use cheap FMP batch calls (~1 per 50 tickers per day) with a Yahoo bulk fallback.
+SCAN_ONLY_SYMBOLS = [s for s in SCAN_SYMBOLS if s not in set(SYMBOLS)]
+TENX_SYMBOLS = SYMBOLS + SCAN_ONLY_SYMBOLS
+TENX_NAMES = {**SCAN_NAMES, **{it["ticker"]: it["name"] for it in WATCHLIST}}
+TENX_SECTORS = {**SCAN_SECTORS, **SECTORS}
+TENX_AUTO_BUDGET = int(os.getenv("TENX_SCAN_BUDGET", "25"))   # quarterly fetches per load
+TENX_CLICK_BUDGET = 75                                        # per "Scan next batch" click
 
 
 def get_api_key() -> Optional[str]:
@@ -143,6 +158,8 @@ def quote_store(): return PersistentStore(os.path.join(_cache_dir(), "quotes.jso
 def fund_store(): return PersistentStore(os.path.join(_cache_dir(), "fundamentals.json"))
 @st.cache_resource
 def momentum_store(): return PersistentStore(os.path.join(_cache_dir(), "momentum.json"))
+@st.cache_resource
+def tenx_store(): return PersistentStore(os.path.join(_cache_dir(), "tenx.json"))
 
 
 def _fresh(entry, ttl): return bool(entry) and (time.time() - entry.get("ts", 0)) < ttl
@@ -364,6 +381,82 @@ def fetch_momentum(symbols, force):
     return out
 
 
+def fetch_scan_quotes(api_key, symbols):
+    """Quotes for the SCAN universe (market cap + 52w range for the 10x Radar).
+    Deliberately batch-only on FMP — no per-ticker fallback, so a plan that
+    rejects batch quotes can never burn hundreds of calls — with a keyless
+    Yahoo bulk download filling whatever is missing. Cached 24h."""
+    store = quote_store()
+    now = time.time()
+    quotes, need = {}, []
+    for s in symbols:
+        e = store.get(s)
+        if _fresh(e, SCAN_QUOTE_TTL):
+            quotes[s] = e["data"]
+        else:
+            if e:
+                quotes[s] = e["data"]
+            need.append(s)
+    if not need:
+        return quotes
+    got = {}
+    try:
+        for chunk in (need[i:i + BATCH_SIZE] for i in range(0, len(need), BATCH_SIZE)):
+            for row in _batch_quote(chunk, api_key):
+                if row.get("symbol"):
+                    got[row["symbol"]] = _norm_quote(row)
+    except FMPRateLimitError:
+        logger.info("scan quotes: FMP rate-limited — Yahoo will fill")
+    except requests.RequestException as e:
+        logger.warning("scan quotes failed (%s) — Yahoo will fill", str(e)[:120])
+    missing = [s for s in need
+               if s not in got and (quotes.get(s) or {}).get("price") is None]
+    if missing and HAVE_YF:
+        got.update(fetch_quotes_yahoo(missing))
+    for sym, d in got.items():
+        store.set(sym, {"data": d, "ts": now})
+        quotes[sym] = d
+    if got:
+        store.flush()
+    return quotes
+
+
+def fetch_tenx_all(symbols, budget):
+    """Quarterly-revenue radar metrics, disk-cached, stalest-first, budgeted.
+    Yahoo-only (keyless) so the radar never touches the FMP quota.
+    Returns (metrics_by_symbol, n_refreshed, n_with_data)."""
+    store = tenx_store()
+    now = time.time()
+    metrics, candidates = {}, []
+    for s in symbols:
+        e = store.get(s)
+        if e:
+            metrics[s] = e["data"]
+        ttl = TENX_RETRY_TTL if (e or {}).get("fail") else TENX_TTL
+        if not _fresh(e, ttl):
+            candidates.append((e.get("ts", 0.0) if e else 0.0, s))
+    candidates.sort(key=lambda kv: kv[0])
+    to_fetch = [s for _, s in candidates[:max(0, budget)]] if HAVE_YF else []
+
+    refreshed = 0
+    if to_fetch:
+        def work(sym):
+            return sym, compute_tenx_metrics(fetch_quarterly_yahoo(sym))
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            futs = [ex.submit(work, s) for s in to_fetch]
+            for fut in as_completed(futs):
+                sym, res = fut.result()
+                ok = res.get("q_rev_yoy") is not None or (res.get("n_quarters") or 0) > 0
+                store.set(sym, {"data": res, "ts": now, "fail": not ok})
+                metrics[sym] = res
+                refreshed += 1
+        store.flush()
+
+    n_have = sum(1 for s in symbols
+                 if (metrics.get(s) or {}).get("q_rev_yoy") is not None)
+    return metrics, refreshed, n_have
+
+
 @st.cache_data(ttl=MARKET_TTL, show_spinner=False)
 def cached_market_context(api_key): return market_risk.get_market_context(api_key)
 
@@ -454,6 +547,8 @@ st.caption(
     f"Data: FMP first (cached to stay inside the free tier)"
     + (", Yahoo Finance fills anything FMP can't deliver — no more empty cells." if HAVE_YF
        else ". Install `yfinance` to auto-fill cells when the FMP quota is hit.")
+    + f" New: the **🚀 10x Radar** below scans {len(TENX_SYMBOLS)} names (watchlist + S&P 500 + "
+      f"Nasdaq-100) for exploding, accelerating quarterly revenues."
 )
 
 api_key = get_api_key()
@@ -644,6 +739,181 @@ m3.metric(f"Avg score ({rank_mode.split(' ')[0]})", f"{avg_score:.0f}/100")
 m4.metric("Top", f"{top_name} {top_score:.0f}")
 st.divider()
 
+
+def color_score(val):
+    if val == "—": return "color: #6b7280;"
+    try:
+        nv = float(val)
+    except ValueError:
+        return ""
+    if nv >= 70: return "color: #047857; font-weight: 600;"
+    if nv >= 45: return "color: #0369a1;"
+    return "color: #6b7280;"
+
+
+def color_signed(val):
+    if val == "—": return "color: #6b7280;"
+    try:
+        nv = float(val.replace("%", "").replace("+", "").replace("pt", ""))
+    except ValueError:
+        return ""
+    return "color: #059669;" if nv >= 0 else "color: #dc2626;"
+
+
+# ---------------------------------------------------------------------------
+# 🚀 10x Radar — exploding revenues (watchlist + S&P 500 + Nasdaq-100 scan)
+# ---------------------------------------------------------------------------
+st.subheader("🚀 10x Radar — exploding revenues")
+st.caption(
+    f"Hunts the reported-numbers profile that past 10-baggers (Nvidia '23, Supermicro, memory-cycle turns "
+    f"like Micron/SanDisk) showed **early**: quarterly revenue growth that is **big and getting bigger**, "
+    f"margins inflecting up (operating leverage), a market cap with room to 10x, and price momentum "
+    f"confirming. Scans **{len(TENX_SYMBOLS)}** names — your {len(SYMBOLS)}-ticker watchlist **plus the "
+    f"S&P 500 / Nasdaq-100** — using free quarterly data (zero FMP quota). "
+    f"**Not a prediction:** most hypergrowth names never 10x; treat hits as research candidates, sized small."
+)
+if not HAVE_YF:
+    st.warning("Install `yfinance` to enable the 10x Radar — it powers the free quarterly-revenue scan.")
+else:
+    if "tenx_scan_more" not in st.session_state:
+        st.session_state.tenx_scan_more = False
+    tenx_budget = TENX_CLICK_BUDGET if st.session_state.tenx_scan_more else TENX_AUTO_BUDGET
+    st.session_state.tenx_scan_more = False
+
+    with st.spinner("Scanning quarterly revenues (cached 3 weeks; new tickers fill in batches)…"):
+        scan_quotes = fetch_scan_quotes(api_key, SCAN_ONLY_SYMBOLS)
+        tenx_metrics, t_ref, t_have = fetch_tenx_all(TENX_SYMBOLS, tenx_budget)
+
+    rc1, rc2, rc3 = st.columns([1.5, 2.6, 1.4])
+    with rc1:
+        if st.button(f"🔍 Scan next {TENX_CLICK_BUDGET} tickers", width="stretch",
+                     help="Fetch quarterly revenue for the next unscanned batch (Yahoo — free, keyless)."):
+            st.session_state.tenx_scan_more = True
+            st.rerun()
+    with rc2:
+        min_yoy = st.slider("Min quarterly revenue growth (YoY %)", 0, 100, 25, 5,
+                            help="Only show names whose latest-quarter revenue grew at least this "
+                                 "fast vs the same quarter last year.")
+    with rc3:
+        show_all_tenx = st.checkbox("Show all matches", value=False, help="Off = top 20 by 10x score.")
+
+    st.caption(f"Quarterly data: **{t_have}/{len(TENX_SYMBOLS)}** tickers scanned · {t_ref} refreshed this "
+               f"load (budget {tenx_budget}/load — coverage builds over a few loads, then stays cached "
+               f"{TENX_TTL//86400} days).")
+
+    tenx_rows = []
+    for s_ in TENX_SYMBOLS:
+        tm = tenx_metrics.get(s_)
+        if not tm:
+            continue
+        q_ = quotes.get(s_) or scan_quotes.get(s_) or {}
+        mcap_ = q_.get("marketCap")
+        p_, lo_, hi_ = q_.get("price"), q_.get("yearLow"), q_.get("yearHigh")
+        m52_ = ((p_ - lo_) / (hi_ - lo_)) if (p_ and lo_ is not None and hi_ and hi_ > lo_) else None
+        score_, _sub, tags_ = tenx_score(tm, mcap_, mom_12_1.get(s_), m52_)
+        if score_ is None:
+            continue
+        accel_ = tm.get("rev_accel") if tm.get("rev_accel") is not None else tm.get("seq_accel")
+        tenx_rows.append({
+            "Ticker": ("★ " if s_ in SECTORS else "") + s_,
+            "Name": TENX_NAMES.get(s_, s_), "Sector": TENX_SECTORS.get(s_, "—"),
+            "10x": score_,
+            "Rev YoY (Q) %": tm["q_rev_yoy"] * 100,
+            "Accel ppt": accel_ * 100 if accel_ is not None else None,
+            "QoQ %": tm["q_rev_qoq"] * 100 if tm.get("q_rev_qoq") is not None else None,
+            "GM Δ ppt": tm["gm_delta"] * 100 if tm.get("gm_delta") is not None else None,
+            "OM Δ ppt": tm["om_delta"] * 100 if tm.get("om_delta") is not None else None,
+            "12-1m %": mom_12_1.get(s_) * 100 if mom_12_1.get(s_) is not None else None,
+            "Mkt Cap": mcap_,
+            "Latest Q": tm.get("latest_q") or "—",
+            "Signals": " · ".join(tags_) if tags_ else "—",
+        })
+
+    tdf = pd.DataFrame(tenx_rows)
+    if tdf.empty:
+        st.info("No quarterly data scanned yet — it fills automatically each load, or click "
+                "**Scan next batch** to speed it up.")
+    else:
+        tdf = tdf[tdf["Rev YoY (Q) %"] >= float(min_yoy)].sort_values("10x", ascending=False)
+        shown_tenx = tdf if show_all_tenx else tdf.head(20)
+        if shown_tenx.empty:
+            st.info(f"No scanned name clears {min_yoy}% quarterly YoY revenue growth — lower the "
+                    f"slider or scan more tickers.")
+        else:
+            def _tenx_disp(row):
+                return pd.Series({
+                    "Ticker": row["Ticker"], "Name": row["Name"], "Sector": row["Sector"],
+                    "10x": f"{row['10x']:.0f}",
+                    "Rev YoY (Q)": f"{row['Rev YoY (Q) %']:+.0f}%",
+                    "Accel": f"{row['Accel ppt']:+.0f}pt" if pd.notna(row["Accel ppt"]) else "—",
+                    "QoQ": f"{row['QoQ %']:+.1f}%" if pd.notna(row["QoQ %"]) else "—",
+                    "GM Δ": f"{row['GM Δ ppt']:+.1f}pt" if pd.notna(row["GM Δ ppt"]) else "—",
+                    "OM Δ": f"{row['OM Δ ppt']:+.1f}pt" if pd.notna(row["OM Δ ppt"]) else "—",
+                    "12-1m": f"{row['12-1m %']:+.0f}%" if pd.notna(row["12-1m %"]) else "—",
+                    "Mkt Cap": fmt_mcap(row["Mkt Cap"]),
+                    "Latest Q": row["Latest Q"],
+                    "Signals": row["Signals"],
+                })
+            tenx_display = shown_tenx.apply(_tenx_disp, axis=1)
+            tstyler = (tenx_display.style
+                       .map(color_score, subset=["10x"])
+                       .map(color_signed, subset=["Rev YoY (Q)", "Accel", "QoQ", "GM Δ", "OM Δ", "12-1m"]))
+            st.dataframe(
+                tstyler, width="stretch", hide_index=True,
+                height=(len(tenx_display) + 1) * 36 + 3,
+                column_config={"Signals": st.column_config.TextColumn(width="large"),
+                               "Name": st.column_config.TextColumn(width="medium")},
+            )
+            st.caption("★ = also in your watchlist · sorted by 10x score · "
+                       "**Rev YoY (Q)** = latest quarter vs same quarter last year · "
+                       "**Accel** = change in that YoY rate vs the prior quarter (percentage points) · "
+                       "**GM/OM Δ** = gross/operating-margin change vs year-ago quarter.")
+            tenx_csv = tdf.to_csv(index=False).encode()
+            st.download_button("📥 Download 10x Radar as CSV", data=tenx_csv,
+                               file_name=f"tenx_radar_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                               mime="text/csv")
+
+    with st.expander("ℹ️ How the 10x score works — and why most hits still won't 10x"):
+        st.markdown(
+            f"""
+**The idea.** Stocks that went on to 10x — Nvidia into the AI buildout, Supermicro, Micron/SanDisk in
+memory upcycles — tended to share a *reported-numbers* fingerprint **before** the biggest gains: quarterly
+revenue growth that was already large **and still accelerating**, margins expanding at the same time
+(operating leverage), a market cap small enough that a 10x was arithmetically possible, and price momentum
+turning up as the market caught on. This radar scores how closely each name's **latest reported quarter**
+matches that fingerprint. Annual data is too slow for this job — a memory-cycle turn shows up in quarterly
+prints two or three quarters before the annual growth number moves — so the radar runs on **quarterly**
+income statements (Yahoo Finance, free, cached {TENX_TTL//86400} days).
+
+**The five components (weights):**
+
+- **Revenue explosion (35%)** — latest-quarter revenue vs the same quarter last year. 0% scores 0; +100%
+  or more scores full marks. This is the "revenues exploding" core.
+- **Acceleration (25%)** — is the YoY growth rate itself rising vs the prior quarter's YoY rate? Catching
+  the *second derivative* is what finds cycle turns (SanDisk/Micron) early. Falls back to sequential
+  quarter-over-quarter acceleration when only five quarters of history exist.
+- **Operating leverage (15%)** — gross & operating margin change vs the year-ago quarter. Exploding revenue
+  with *expanding* margins is the profit-inflection double-whammy that re-rates stocks.
+- **10x headroom (15%)** — market-cap tiers: under $2B scores 1.0, $2–10B ≈ 0.9, $10–50B ≈ 0.7, $50–200B ≈
+  0.5, $200B–1T ≈ 0.3, above $1T ≈ 0.1. A $4T company 10x-ing would be a $40T company — the math matters.
+- **Momentum confirmation (10%)** — 12-minus-1-month return (or 52-week-range position for scan-only
+  names). A hot quarter the market ignores deserves a look; one it's chasing deserves confirmation.
+
+Missing components shrink the score toward 50 rather than being skipped, so thin data can't fluke a 95.
+Thresholds are **absolute**, not peer-relative — "exploding" should mean exploding.
+
+**Read the ⚠️ tags.** *Tiny revenue base* means the percentages are easy (a $30M company doubling is not
+Nvidia doubling); *margins compressing* means growth is being bought with profitability.
+
+**Caveats — please read.** Not financial advice. This screen looks **backwards** at reported data; it cannot
+see guidance cuts, competition, dilution, or cycle peaks (the same memory names that 10x also fall 70% in
+downcycles). Most names that light up here will *not* 10x — the historical base rate for 10-baggers is low
+even among hypergrowers. Use it to generate research candidates, size positions small, and do the
+qualitative work the numbers can't.
+"""
+        )
+st.divider()
+
 # ---------------------------------------------------------------------------
 # Single-ticker lookup — type ANY symbol (watchlist or not) to pull its metrics
 # ---------------------------------------------------------------------------
@@ -745,6 +1015,17 @@ if query:
         st.dataframe(pd.DataFrame([raw]), width="stretch", hide_index=True)
         if flag_list:
             st.caption("**Flags:** " + " · ".join(flag_list))
+        # 10x Radar read for the looked-up ticker (1 free Yahoo call, cached).
+        if HAVE_YF:
+            tq_metrics, _, _ = fetch_tenx_all([query], budget=1)
+            tqm = tq_metrics.get(query)
+            if tqm and tqm.get("q_rev_yoy") is not None:
+                t_sc, _, t_tags = tenx_score(tqm, look_quote.get("marketCap"),
+                                             look_fund.get("mom_12_1"), look_fund.get("mom_52w"))
+                if t_sc is not None:
+                    st.caption(f"**🚀 10x Radar:** {t_sc:.0f}/100 · Rev YoY (Q) "
+                               f"{tqm['q_rev_yoy']*100:+.0f}%"
+                               + (" · " + " · ".join(t_tags) if t_tags else ""))
         if is_member:
             thesis = next((it["thesis"] for it in WATCHLIST if it["ticker"] == query), "")
             if thesis:
@@ -791,26 +1072,6 @@ def render_display(row):
 
 
 display = view.apply(render_display, axis=1)
-
-
-def color_score(val):
-    if val == "—": return "color: #6b7280;"
-    try:
-        nv = float(val)
-    except ValueError:
-        return ""
-    if nv >= 70: return "color: #047857; font-weight: 600;"
-    if nv >= 45: return "color: #0369a1;"
-    return "color: #6b7280;"
-
-
-def color_signed(val):
-    if val == "—": return "color: #6b7280;"
-    try:
-        nv = float(val.replace("%", "").replace("+", ""))
-    except ValueError:
-        return ""
-    return "color: #059669;" if nv >= 0 else "color: #dc2626;"
 
 
 styler = display.style

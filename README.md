@@ -13,6 +13,12 @@ Open the deployed URL in your browser each morning — fresh prices on every pag
 - Static: analyst price target, thesis, catalyst, risk note.
 - Computed live: % upside to target.
 - Sector filter, sort by clicking column headers, CSV export, manual refresh button.
+- **🚀 10x Radar** — scans the watchlist **plus the S&P 500 / Nasdaq-100** (~600 names, `tenx_universe.py`)
+  for the exploding-revenue profile of past 10-baggers (Nvidia '23, Micron/SanDisk memory-cycle turns):
+  quarterly revenue YoY **level + acceleration**, margin inflection (operating leverage), market-cap
+  headroom, and momentum confirmation (`tenx_radar.py`). Runs on free Yahoo quarterly data — zero FMP
+  quota — cached 21 days, filling ~25 tickers per page load (`TENX_SCAN_BUDGET` env to change) with a
+  "Scan next batch" button to speed it up. Screens reported data only; not investment advice.
 
 ---
 
