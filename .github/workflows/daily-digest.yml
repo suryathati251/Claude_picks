@@ -1,0 +1,33 @@
+# Daily digest: S&P 500 fear/greed entry meter + 10x Radar top 10.
+#
+# Delivery: set repo secrets TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID for a
+# Telegram message; without them the digest is still visible in each run's log.
+# FMP_API_KEY (secret) is optional but recommended — adds market context + caps.
+#
+# Runs weekdays at 13:30 UTC (~9:30am ET). Trigger manually from the Actions
+# tab via "Run workflow" to test.
+name: Daily digest
+
+on:
+  schedule:
+    - cron: "30 13 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Build and send digest
+        env:
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DIGEST_UNIVERSE: watchlist
+        run: python digest.py

@@ -24,6 +24,23 @@ Open the deployed URL in your browser each morning — fresh prices on every pag
   average, 52-week range position, RSI(14), and watchlist breadth, each normalized and averaged, with
   a zone-based deployment stance (accumulate into extreme fear · plain DCA in neutral · patience with
   extra cash in extreme greed). Timing caveats included; not investment advice.
+- **Tab navigation** — 📊 Watchlist · 🚀 10x Radar · 🎯 Market & Entry · 🔎 Lookup. The radar's
+  market-scan only loads when its tab is open, so the default view stays fast.
+- **Radar context columns** — **P/S** (market cap ÷ TTM revenue: how much of the explosion is already
+  priced), **Δ** (10x-score change vs ~a week ago), **🆕** (entered the top 10 since then), and
+  **Earnings** (next report date, ⚠️ within 7 days; Yahoo, cached 3d, displayed rows only).
+- **Score history** (`history.json`) — daily snapshots of 10x scores, watchlist composites, and the
+  entry meter (180-day retention) power the Δ/🆕 flags and the meter trend line. Note: Streamlit
+  Cloud's disk resets on redeploys, so history re-accumulates after each deploy.
+- **Insider column** — open-market buys/sells by officers & directors over 90 days (🟢 net buying ·
+  🟣 3+ buys, zero sells, near the 52-week low). Own FMP budget (`INSIDER_BUDGET`, default 8/load,
+  cached 14d); if your FMP plan doesn't include insider data the column stays blank without wasting
+  quota. Display-only — never moves the Score.
+- **Daily digest** (`digest.py` + `.github/workflows/daily-digest.yml`) — weekday GitHub Action
+  (13:30 UTC) that posts the entry-meter reading + 10x Radar top 10 to Telegram. Setup: repo
+  **Settings → Secrets and variables → Actions** → add `FMP_API_KEY`, `TELEGRAM_BOT_TOKEN` (from
+  @BotFather) and `TELEGRAM_CHAT_ID` (from @userinfobot). Without the Telegram secrets the digest
+  still prints in each run's Actions log. Test it via Actions → Daily digest → Run workflow.
 
 ---
 

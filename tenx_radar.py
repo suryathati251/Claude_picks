@@ -111,6 +111,35 @@ def fetch_quarterly_yahoo(symbol: str) -> Optional[dict]:
     }
 
 
+def fetch_next_earnings(symbol: str) -> Optional[str]:
+    """Next scheduled earnings date as 'YYYY-MM-DD' (Yahoo calendar, keyless),
+    or the most recent past date if nothing upcoming, or None. Never raises."""
+    if not HAVE_YF:
+        return None
+    try:
+        cal = yf.Ticker(symbol).calendar
+    except Exception:  # noqa: BLE001
+        return None
+    dates = []
+    try:
+        if isinstance(cal, dict):
+            dates = list(cal.get("Earnings Date") or [])
+        elif cal is not None and hasattr(cal, "loc"):   # older yfinance: DataFrame
+            try:
+                dates = list(cal.loc["Earnings Date"])
+            except Exception:  # noqa: BLE001
+                dates = []
+    except Exception:  # noqa: BLE001
+        return None
+    iso = sorted(str(d)[:10] for d in dates if d is not None)
+    if not iso:
+        return None
+    from datetime import date
+    today = date.today().isoformat()
+    future = [d for d in iso if d >= today]
+    return future[0] if future else iso[-1]
+
+
 # ---------------------------------------------------------------------------
 # Metrics from the quarterly series
 # ---------------------------------------------------------------------------
