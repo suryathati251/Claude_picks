@@ -66,6 +66,7 @@ from yahoo_fallback import (
 )
 from tenx_universe import SCAN_SYMBOLS, SCAN_NAMES, SCAN_SECTORS
 from tenx_radar import fetch_quarterly_yahoo, compute_tenx_metrics, tenx_score
+from entry_meter import fetch_entry_history_yahoo, compute_entry_meter
 import market_risk
 
 _seen = {item["ticker"] for item in _BASE_WATCHLIST}
@@ -461,6 +462,10 @@ def fetch_tenx_all(symbols, budget):
 def cached_market_context(api_key): return market_risk.get_market_context(api_key)
 
 
+@st.cache_data(ttl=MARKET_TTL, show_spinner=False)
+def cached_entry_history(): return fetch_entry_history_yahoo()
+
+
 # ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
@@ -655,6 +660,73 @@ with st.container():
         st.caption(f"**Volatility — {mkt['vix_label']}:** {mkt['vix_context']}")
     for note in mkt.get("notes", []):
         st.info(note)
+
+    # -----------------------------------------------------------------------
+    # 🎯 S&P 500 entry meter — buy fear, not greed
+    # -----------------------------------------------------------------------
+    st.markdown("#### 🎯 Time to add to the S&P 500? — fear/greed entry meter")
+
+    # Breadth: % of tracked tickers above their own 200-day average (free —
+    # derived from the batch quotes already in memory).
+    _above = _with_ma = 0
+    for _s in SYMBOLS:
+        _q = quotes.get(_s) or {}
+        _p, _ma = _q.get("price"), _q.get("ma200")
+        if _p and _ma:
+            _with_ma += 1
+            if _p > _ma:
+                _above += 1
+    breadth_pct = (_above / _with_ma * 100) if _with_ma >= 20 else None
+
+    _hist = cached_entry_history() if HAVE_YF else {}
+    meter = compute_entry_meter(mkt, breadth_pct,
+                                _hist.get("spx_rsi14"), _hist.get("vix_pctile_1y"))
+
+    if meter["score"] is None:
+        st.caption("Entry meter unavailable — market data didn't load this refresh.")
+    else:
+        e1, e2 = st.columns([1, 3])
+        e1.metric("Fear ↔ Greed", f"{meter['score']:.0f}/100",
+                  help="0 = extreme fear (historically the better entry zone) · "
+                       "100 = extreme greed (historically the worse entry zone). "
+                       "Blend of drawdown, VIX level + 1y percentile, trend stretch, "
+                       "52-week position, RSI(14), and breadth.")
+        with e2:
+            st.progress(min(1.0, max(0.0, meter["score"] / 100.0)),
+                        text=f"**{meter['zone']}** — 0 = extreme fear (buy zone by your rule) · "
+                             f"100 = extreme greed")
+        st.markdown(f"**Stance:** {meter['stance']}")
+        comp_line = "  ·  ".join(f"{name} **{g:.0f}** ({detail})"
+                                 for name, g, detail in meter["components"])
+        st.caption(f"Components (each 0 = fear → 100 = greed): {comp_line}")
+        with st.expander("ℹ️ How the entry meter works — and the honest caveats"):
+            st.markdown(
+                """
+**Your rule, quantified.** "Invest during fear, not greed" is the contrarian discipline this meter
+encodes. Each signal is scored 0 (maximum fear) to 100 (maximum greed) and averaged:
+
+- **Drawdown from 52-week high** — at the high scores 100; a −20% bear-market drawdown scores 0.
+  Deeper discounts to the high have historically offered better forward entry prices.
+- **VIX level** — panic (40+) scores 0; complacency (≤12) scores 100. Volatility spikes cluster
+  near lows; calm clusters near tops.
+- **VIX vs its own 1-year range** — the same signal, but relative: today's VIX percentile over the
+  past year, inverted.
+- **Stretch vs the 200-day average** — more than ~10% above the long-term trend line scores fully
+  greedy; more than ~10% below scores fully fearful.
+- **52-week range position** — where the index sits between its 1-year low (0) and high (100).
+- **RSI(14)** — the classic oversold (≤30 → 0) / overbought (≥70 → 100) oscillator on the index.
+- **Breadth** — the share of this app's tracked tickers above their own 200-day average; narrow
+  participation near highs is a greed tell, washed-out breadth a fear tell.
+
+**The honest caveats.** Market timing does not reliably work, and the meter knows nothing about
+the future: extreme fear got MORE extreme in 2008 and March 2020 before it paid off, and greed
+readings can persist for years in strong bull markets (1995–1999, 2023–2024) while the index
+compounds. Historically a lump sum invested immediately has beaten waiting for a pullback roughly
+two-thirds of the time. So use the meter the way the stance text does: **never stop a scheduled
+DCA because of greed; use fear to deploy pre-committed extra cash faster.** It calibrates the
+price you pay when you were investing anyway — it is not a prediction, and not financial advice.
+"""
+            )
 st.divider()
 
 # ---------------------------------------------------------------------------

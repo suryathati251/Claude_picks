@@ -19,6 +19,11 @@ Open the deployed URL in your browser each morning — fresh prices on every pag
   headroom, and momentum confirmation (`tenx_radar.py`). Runs on free Yahoo quarterly data — zero FMP
   quota — cached 21 days, filling ~25 tickers per page load (`TENX_SCAN_BUDGET` env to change) with a
   "Scan next batch" button to speed it up. Screens reported data only; not investment advice.
+- **🎯 S&P 500 entry meter** (`entry_meter.py`) — a 0–100 fear/greed gauge for "invest during fear,
+  not greed": drawdown from the 52-week high, VIX level + 1-year percentile, stretch vs the 200-day
+  average, 52-week range position, RSI(14), and watchlist breadth, each normalized and averaged, with
+  a zone-based deployment stance (accumulate into extreme fear · plain DCA in neutral · patience with
+  extra cash in extreme greed). Timing caveats included; not investment advice.
 
 ---
 
