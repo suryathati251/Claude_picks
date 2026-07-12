@@ -528,6 +528,7 @@ MSTR|MicroStrategy|Information Technology
 PDD|PDD Holdings|Consumer Discretionary
 SHOP|Shopify|Information Technology
 TRI|Thomson Reuters|Industrials
+SNAP|Snap Inc.|Communication Services
 APLD|Applied Digital|Information Technology
 SOUN|SoundHound AI|Information Technology
 IONQ|IonQ|Information Technology
