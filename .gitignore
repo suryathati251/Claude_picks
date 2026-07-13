@@ -1,14 +1,4 @@
-# Python
 __pycache__/
-*.py[cod]
-.venv/
-venv/
-
-# Runtime FMP cache (created by app.py; never commit)
+*.pyc
 .fmp_cache/
-
-# Streamlit secrets — keep your API key OUT of git
 .streamlit/secrets.toml
-
-# OS
-.DS_Store
