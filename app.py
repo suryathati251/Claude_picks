@@ -783,6 +783,29 @@ def color_signed(val):
     return "color: #059669;" if nv >= 0 else "color: #dc2626;"
 
 
+def pos_row_bg(pos):
+    """Row background from the 52-week range position (0 = at the low, 100 = at
+    the high). Buy-fear visual: bottom 30% of the range shades GREEN (darkest at
+    the 52w low), top 30% shades RED (darkest at the 52w high), middle is plain.
+    rgba keeps text readable in light and dark themes."""
+    if pos is None or pd.isna(pos):
+        return ""
+    if pos <= 30:
+        alpha = 0.15 + (30.0 - pos) / 30.0 * 0.40      # 0% -> 0.55 · 30% -> 0.15
+        return f"background-color: rgba(16, 185, 129, {alpha:.2f});"
+    if pos >= 70:
+        alpha = 0.12 + (pos - 70.0) / 30.0 * 0.33      # 70% -> 0.12 · 100% -> 0.45
+        return f"background-color: rgba(239, 68, 68, {alpha:.2f});"
+    return ""
+
+
+def row_bg_styler(pos_series):
+    """Row-wise Styler.apply function bound to a {row index -> 52w pos} series."""
+    def _style(row):
+        return [pos_row_bg(pos_series.get(row.name))] * len(row)
+    return _style
+
+
 # ---------------------------------------------------------------------------
 # Navigation
 # ---------------------------------------------------------------------------
@@ -912,6 +935,9 @@ if nav == NAV_WATCH:
 
 
     styler = display.style
+    # Row shading: green near the 52-week low (darker = closer — buy-fear zone),
+    # red near the 52-week high (darker = closer).
+    styler = styler.apply(row_bg_styler(view["52w Pos %"]), axis=1)
     for c in ["Score", "V", "Q", "G", "M", "S", "Moat"]:
         styler = styler.map(color_score, subset=[c])
     styler = (styler.map(color_signed, subset=["Day %"])
@@ -927,7 +953,10 @@ if nav == NAV_WATCH:
                        "Flags": st.column_config.TextColumn(width="medium"),
                        "Name": st.column_config.TextColumn(width="medium")},
     )
-    st.caption("🟢 = positive signal · 🔴 = risk. Flags adjust the Score (±, capped at −25/+15). "
+    st.caption("**Row shading:** 🟩 green = in the bottom 30% of its 52-week range (darker = closer "
+               "to the 52w low — the buy-fear zone) · 🟥 red = top 30% of the range (darker = closer "
+               "to the 52w high). "
+               "🟢 = positive signal · 🔴 = risk. Flags adjust the Score (±, capped at −25/+15). "
                "**Insider** = open-market buys/sells by officers & directors, last 90 days "
                "(🟢 net buying · 🟣 cluster buying near the 52-week low — the classic contrarian tell; "
                "display-only, doesn't move the Score). "
@@ -1075,6 +1104,7 @@ elif nav == NAV_RADAR:
                 "GM Δ ppt": tm["gm_delta"] * 100 if tm.get("gm_delta") is not None else None,
                 "OM Δ ppt": tm["om_delta"] * 100 if tm.get("om_delta") is not None else None,
                 "12-1m %": mom_12_1.get(s_) * 100 if mom_12_1.get(s_) is not None else None,
+                "52w Pos %": m52_ * 100 if m52_ is not None else None,
                 "P/S": (mcap_ / ttm_) if (mcap_ and ttm_ and ttm_ > 0) else None,
                 "Mkt Cap": mcap_,
                 "Latest Q": tm.get("latest_q") or "—",
@@ -1120,6 +1150,7 @@ elif nav == NAV_RADAR:
                         "GM Δ": f"{row['GM Δ ppt']:+.1f}pt" if pd.notna(row["GM Δ ppt"]) else "—",
                         "OM Δ": f"{row['OM Δ ppt']:+.1f}pt" if pd.notna(row["OM Δ ppt"]) else "—",
                         "12-1m": f"{row['12-1m %']:+.0f}%" if pd.notna(row["12-1m %"]) else "—",
+                        "52w": f"{row['52w Pos %']:.0f}%" if pd.notna(row["52w Pos %"]) else "—",
                         "P/S": f"{row['P/S']:.1f}" if pd.notna(row["P/S"]) else "—",
                         "Mkt Cap": fmt_mcap(row["Mkt Cap"]),
                         "Earnings": fmt_earnings(earn_dates.get(row["Sym"])),
@@ -1128,6 +1159,7 @@ elif nav == NAV_RADAR:
                     })
                 tenx_display = shown_tenx.apply(_tenx_disp, axis=1)
                 tstyler = (tenx_display.style
+                           .apply(row_bg_styler(shown_tenx["52w Pos %"]), axis=1)
                            .map(color_score, subset=["10x"])
                            .map(color_signed, subset=["Δ", "Rev YoY (Q)", "Accel", "QoQ",
                                                       "GM Δ", "OM Δ", "12-1m"]))
@@ -1137,7 +1169,10 @@ elif nav == NAV_RADAR:
                     column_config={"Signals": st.column_config.TextColumn(width="large"),
                                    "Name": st.column_config.TextColumn(width="medium")},
                 )
-                st.caption("★ = also in your watchlist · sorted by 10x score · "
+                st.caption("**Row shading:** 🟩 green = bottom 30% of the 52-week range (darker = closer to "
+                           "the 52w low — exploding revenue AND a beaten-down price is the radar's dream setup) · "
+                           "🟥 red = top 30% (darker = closer to the 52w high). "
+                           "★ = also in your watchlist · sorted by 10x score · "
                            "**Δ** = 10x-score change" + (f" since {hist_date}" if hist_date else " (needs ~5 days of history)") + " · "
                            "**Rev YoY (Q)** = latest quarter vs same quarter last year · "
                            "**Accel** = change in that YoY rate vs the prior quarter (percentage points) · "
