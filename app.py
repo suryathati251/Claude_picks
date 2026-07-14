@@ -1071,7 +1071,9 @@ elif nav == NAV_RADAR:
                                 help="Only show names whose latest-quarter revenue grew at least this "
                                      "fast vs the same quarter last year.")
         with rc3:
-            show_all_tenx = st.checkbox("Show all matches", value=False, help="Off = top 20 by 10x score.")
+            show_n = st.selectbox("Rows shown", ["Top 20", "Top 50", "Top 100", "All matches"],
+                                  index=0, help="How many of the highest-scoring matches to display. "
+                                  "All matches = every scanned name above the growth slider.")
 
         st.caption(f"Quarterly data: **{t_have}/{len(TENX_SYMBOLS)}** tickers scanned · {t_ref} refreshed this "
                    f"load (budget {tenx_budget}/load — coverage builds over a few loads, then stays cached "
@@ -1131,13 +1133,18 @@ elif nav == NAV_RADAR:
                     "**Scan next batch** to speed it up.")
         else:
             tdf = tdf[tdf["Rev YoY (Q) %"] >= float(min_yoy)].sort_values("10x", ascending=False)
-            shown_tenx = tdf if show_all_tenx else tdf.head(20)
+            _n_map = {"Top 20": 20, "Top 50": 50, "Top 100": 100}
+            shown_tenx = tdf.head(_n_map[show_n]) if show_n in _n_map else tdf
+            st.caption(f"Showing **{len(shown_tenx)}** of **{len(tdf)}** names clearing the "
+                       f"{min_yoy}% growth bar — use **Rows shown** to see more.")
             if shown_tenx.empty:
                 st.info(f"No scanned name clears {min_yoy}% quarterly YoY revenue growth — lower the "
                         f"slider or scan more tickers.")
             else:
                 with st.spinner("Checking earnings dates…"):
-                    earn_dates = fetch_earnings_dates(list(shown_tenx["Sym"])[:40])
+                    # First 100 displayed rows (1 free Yahoo call each on first
+                    # load, then cached 3 days); beyond that the column shows —.
+                    earn_dates = fetch_earnings_dates(list(shown_tenx["Sym"])[:100])
 
                 def _tenx_disp(row):
                     return pd.Series({
