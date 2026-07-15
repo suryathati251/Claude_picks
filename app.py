@@ -34,6 +34,26 @@ import pandas as pd
 import requests
 import streamlit as st
 
+# ---------------------------------------------------------------------------
+# Streamlit Cloud stale-module guard.
+# On a git push, Cloud hot-reloads THIS file but keeps previously imported
+# local modules in the running Python process — so a new app.py importing a
+# just-added function raises ImportError until someone reboots the app
+# (this bit us twice: tenx_radar.fetch_next_earnings, options_income.live_spot).
+# Reloading our own modules at script start guarantees app.py and its helpers
+# always come from the same commit. Parents reload before dependents.
+# ---------------------------------------------------------------------------
+import importlib as _importlib
+import sys as _sys
+for _m in ("fundamentals", "yahoo_fallback", "market_risk",
+           "watchlist_data", "watchlist_growth", "tenx_universe",
+           "tenx_radar", "entry_meter", "insider", "options_income"):
+    if _m in _sys.modules:
+        try:
+            _importlib.reload(_sys.modules[_m])
+        except Exception:  # noqa: BLE001 — never let the guard itself kill the app
+            pass
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
