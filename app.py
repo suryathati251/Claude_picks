@@ -69,7 +69,8 @@ from tenx_radar import (fetch_quarterly_yahoo, compute_tenx_metrics, tenx_score,
                         fetch_next_earnings)
 from entry_meter import fetch_entry_history_yahoo, compute_entry_meter
 from insider import fetch_insider, insider_display
-from options_income import fetch_put_candidates
+from options_income import (fetch_put_candidates, fetch_call_candidates,
+                            fetch_leaps_candidates)
 import market_risk
 
 _seen = {item["ticker"] for item in _BASE_WATCHLIST}
@@ -545,27 +546,33 @@ def fmt_earnings(iso: Optional[str]) -> str:
     return f"{label} · {days}d{warn}"
 
 
-def fetch_puts_all(spots_by_symbol, budget=PUTS_MAX_TICKERS):
-    """Cash-secured-put candidates per ticker (Yahoo chains, keyless), disk-
-    cached 4h, at most `budget` tickers fetched fresh per load."""
+_OPT_FETCHERS = {"csp": fetch_put_candidates, "cc": fetch_call_candidates,
+                 "leaps": fetch_leaps_candidates}
+
+
+def fetch_options_all(spots_by_symbol, strategy, budget=PUTS_MAX_TICKERS):
+    """Option candidates per ticker for one strategy ('csp'/'cc'/'leaps').
+    Yahoo chains (keyless), disk-cached 4h per (strategy, ticker), at most
+    `budget` tickers fetched fresh per load."""
+    fetcher = _OPT_FETCHERS[strategy]
     store = options_store()
     now = time.time()
     out, need = {}, []
     for s, spot in spots_by_symbol.items():
-        e = store.get(s)
+        e = store.get(f"{strategy}:{s}")
         if _fresh(e, OPTIONS_TTL):
             out[s] = e["data"]
         else:
             need.append((s, spot))
     if need and HAVE_YF:
         def work(sym, spot):
-            return sym, fetch_put_candidates(sym, spot)
+            return sym, fetcher(sym, spot)
         fetched = 0
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             futs = [ex.submit(work, s, sp) for s, sp in need[:max(0, budget)]]
             for fut in as_completed(futs):
                 sym, res = fut.result()
-                store.set(sym, {"data": res, "ts": now})
+                store.set(f"{strategy}:{sym}", {"data": res, "ts": now})
                 out[sym] = res
                 fetched += 1
         if fetched:
@@ -859,7 +866,7 @@ def row_bg_styler(pos_series):
 # Navigation
 # ---------------------------------------------------------------------------
 NAV_WATCH, NAV_RADAR, NAV_MARKET, NAV_PUTS, NAV_LOOKUP = (
-    "📊 Watchlist", "🚀 10x Radar", "🎯 Market & Entry", "💰 Puts", "🔎 Lookup")
+    "📊 Watchlist", "🚀 10x Radar", "🎯 Market & Entry", "💰 Options", "🔎 Lookup")
 nav = st.radio("section", [NAV_WATCH, NAV_RADAR, NAV_MARKET, NAV_PUTS, NAV_LOOKUP],
                horizontal=True, key="nav", label_visibility="collapsed")
 
@@ -1523,150 +1530,366 @@ elif nav == NAV_LOOKUP:
 
 elif nav == NAV_PUTS:
     # -----------------------------------------------------------------------
-    # 💰 Cash-secured puts — get PAID to wait for your buy-fear entry price
+    # 💰 Options strategies — income + defined-risk expressions of the same
+    # buy-fear / 10x theses the rest of the app surfaces.
     # -----------------------------------------------------------------------
-    st.subheader("💰 Cash-secured put screener")
+    st.subheader("💰 Options strategies")
     st.caption(
-        "The income twist on **buy fear**: for a stock you already want at a lower price — ideally one "
-        "in the green zone near its 52-week low — sell an out-of-the-money **put** at the strike you'd "
-        "happily pay, with cash reserved to buy 100 shares. Either it stays above the strike and you "
-        "keep the premium, or you're assigned at the entry you wanted **minus** the premium. "
-        "Yahoo chains, ~15-min delayed — research, not execution. **Not advice.**"
+        "Three ways to express what the other tabs find: **cash-secured puts** get you paid to wait "
+        "for a green-zone entry price · **covered calls** rent out red-zone names you already own · "
+        "**LEAPS calls** turn a 10x-radar thesis into a defined-risk position. Yahoo chains, ~15-min "
+        "delayed — research, not execution. **Not advice.**"
     )
     if not HAVE_YF:
-        st.warning("Install `yfinance` to enable the put screener.")
+        st.warning("Install `yfinance` to enable the options screeners.")
     else:
+        OPT_CSP = "🛡️ Cash-secured puts"
+        OPT_CC = "🏠 Covered calls"
+        OPT_LEAPS = "🚀 LEAPS calls"
+        strategy = st.radio("strategy", [OPT_CSP, OPT_CC, OPT_LEAPS], horizontal=True,
+                            key="opt_strategy", label_visibility="collapsed")
         us_df = df[(df["Region"] == "US") & df["Price"].notna()]
-        green_df = us_df[us_df["52w Pos %"].notna() & (us_df["52w Pos %"] <= 40)] \
-            .sort_values("52w Pos %")
-        default_picks = list(green_df["Ticker"].head(8))
-        pc1, pc2 = st.columns([3, 1.6])
-        with pc1:
-            picked = st.multiselect(
-                "Stocks to screen (US-listed; pre-filled with your green-zone names, nearest "
-                "52-week low first)",
-                options=sorted(us_df["Ticker"]), default=default_picks,
-                max_selections=PUTS_MAX_TICKERS,
-                help=f"Each ticker costs ~3 free Yahoo calls (cached {OPTIONS_TTL//3600}h). "
-                     f"Max {PUTS_MAX_TICKERS} at a time.")
-        with pc2:
-            min_cushion = st.slider(
-                "Min cushion %", 0, 15, 5,
-                help="Cushion = how far the stock can fall before the position loses money "
-                     "(spot → breakeven). Higher = safer, smaller premium.")
+        today_iso = datetime.now().date().isoformat()
 
-        if not picked:
-            st.info("Pick at least one ticker — green-zone names (near their 52-week lows) usually "
-                    "carry the richest, most rational premiums for this strategy.")
-        else:
-            spots = {s: (quotes.get(s) or {}).get("price") for s in picked}
-            spots = {s: p for s, p in spots.items() if p}
-            with st.spinner(f"Fetching options chains for {len(spots)} tickers (15-65 days out)…"):
-                puts_by_sym = fetch_puts_all(spots)
-                earn_p = fetch_earnings_dates(list(spots))
-
-            today_iso = datetime.now().date().isoformat()
-            put_rows = []
-            for s_, rows_ in puts_by_sym.items():
-                pos_ = None
-                m_ = us_df[us_df["Ticker"] == s_]
-                if len(m_):
-                    pos_ = m_["52w Pos %"].iloc[0]
-                for r_ in (rows_ or []):
-                    ed = earn_p.get(s_)
-                    earn_flag = (f"⚠️ {ed}" if ed and today_iso <= ed <= r_["expiry"] else "—")
-                    put_rows.append({
-                        "Ticker": s_, "52w Pos %": pos_,
-                        "Spot": r_["spot"], "Strike": r_["strike"], "OTM %": r_["otm_pct"] * 100,
-                        "Expiry": r_["expiry"], "DTE": r_["dte"],
-                        "Premium": r_["premium"], "Src": r_["premium_src"],
-                        "Yield %": r_["yield"] * 100, "Annualized %": r_["annualized"] * 100,
-                        "Breakeven": r_["breakeven"], "Cushion %": r_["cushion"] * 100,
-                        "IV %": r_["iv"] * 100 if r_["iv"] is not None else None,
-                        "OI": r_["oi"], "Cash needed": r_["cash_needed"],
-                        "Earnings pre-expiry": earn_flag,
-                    })
-            pdf_ = pd.DataFrame(put_rows)
-            if pdf_.empty:
-                st.info("No put candidates found — these names may not have listed options, or "
-                        "quotes are empty outside US market hours. Try again during the trading day.")
+        # ------------------------------------------------------------------
+        # 🛡️ Cash-secured puts — get PAID to wait for your buy-fear entry
+        # ------------------------------------------------------------------
+        if strategy == OPT_CSP:
+            st.markdown("**Sell an OTM put on a stock you want cheaper** (ideally green-zone, near its "
+                        "52-week low), with cash reserved for 100 shares: keep the premium, or get "
+                        "assigned at the entry you wanted *minus* the premium.")
+            green_df = us_df[us_df["52w Pos %"].notna() & (us_df["52w Pos %"] <= 40)] \
+                .sort_values("52w Pos %")
+            pc1, pc2 = st.columns([3, 1.6])
+            with pc1:
+                picked = st.multiselect(
+                    "Stocks to screen (pre-filled with green-zone names, nearest 52-week low first)",
+                    options=sorted(us_df["Ticker"]), default=list(green_df["Ticker"].head(8)),
+                    max_selections=PUTS_MAX_TICKERS,
+                    help=f"Each ticker ≈3 free Yahoo calls (cached {OPTIONS_TTL//3600}h). "
+                         f"Max {PUTS_MAX_TICKERS} at a time.")
+            with pc2:
+                min_cushion = st.slider(
+                    "Min cushion %", 0, 15, 5,
+                    help="How far the stock can fall before the position loses at expiry "
+                         "(spot → breakeven). Higher = safer, smaller premium.")
+            if not picked:
+                st.info("Pick at least one ticker — green-zone names usually carry the richest, "
+                        "most rational premiums for this strategy.")
             else:
-                pdf_ = pdf_[pdf_["Cushion %"] >= float(min_cushion)] \
-                    .sort_values("Annualized %", ascending=False).head(40)
+                spots = {s: (quotes.get(s) or {}).get("price") for s in picked}
+                spots = {s: p for s, p in spots.items() if p}
+                with st.spinner(f"Fetching put chains for {len(spots)} tickers (15-65 days out)…"):
+                    by_sym = fetch_options_all(spots, "csp")
+                    earn_p = fetch_earnings_dates(list(spots))
+                put_rows = []
+                for s_, rows_ in by_sym.items():
+                    m_ = us_df[us_df["Ticker"] == s_]
+                    pos_ = m_["52w Pos %"].iloc[0] if len(m_) else None
+                    for r_ in (rows_ or []):
+                        ed = earn_p.get(s_)
+                        put_rows.append({
+                            "Ticker": s_, "52w Pos %": pos_,
+                            "Spot": r_["spot"], "Strike": r_["strike"], "OTM %": r_["otm_pct"] * 100,
+                            "Expiry": r_["expiry"], "DTE": r_["dte"],
+                            "Premium": r_["premium"], "Src": r_["premium_src"],
+                            "Yield %": r_["yield"] * 100, "Annualized %": r_["annualized"] * 100,
+                            "Breakeven": r_["breakeven"], "Cushion %": r_["cushion"] * 100,
+                            "IV %": r_["iv"] * 100 if r_["iv"] is not None else None,
+                            "OI": r_["oi"], "Cash needed": r_["cash_needed"],
+                            "Earnings pre-expiry": (f"⚠️ {ed}" if ed and today_iso <= ed <= r_["expiry"]
+                                                    else "—"),
+                        })
+                pdf_ = pd.DataFrame(put_rows)
                 if pdf_.empty:
-                    st.info(f"Nothing clears a {min_cushion}% cushion — lower the slider, or accept "
-                            f"that premiums are thin right now (often true when fear is low).")
+                    st.info("No put candidates found — these names may not have listed options, or "
+                            "quotes are empty outside US market hours.")
                 else:
-                    put_display = pd.DataFrame({
-                        "Ticker": pdf_["Ticker"], "52w": pdf_["52w Pos %"],
-                        "Spot": pdf_["Spot"], "Strike": pdf_["Strike"],
-                        "OTM": pdf_["OTM %"], "Expiry": pdf_["Expiry"], "DTE": pdf_["DTE"],
-                        "Premium": pdf_["Premium"], "Src": pdf_["Src"],
-                        "Yield": pdf_["Yield %"], "Annualized": pdf_["Annualized %"],
-                        "Breakeven": pdf_["Breakeven"], "Cushion": pdf_["Cushion %"],
-                        "IV": pdf_["IV %"], "OI": pdf_["OI"],
-                        "Cash/contract": pdf_["Cash needed"],
-                        "Earnings": pdf_["Earnings pre-expiry"],
-                    })
-                    pstyler = (put_display.style
-                               .map(color_signed, subset=["Cushion", "Yield"])
-                               .apply(row_bg_styler(pdf_["52w Pos %"]), axis=1))
-                    st.dataframe(
-                        pstyler, width="stretch", hide_index=True,
-                        height=(len(put_display) + 1) * 36 + 3,
-                        column_config={
-                            "52w": ncol("%.0f%%"), "Spot": ncol("$%.2f"),
-                            "Strike": ncol("$%.2f"), "OTM": ncol("%.0f%% below"),
-                            "DTE": ncol("%dd"), "Premium": ncol("$%.2f"),
-                            "Yield": ncol("%.1f%%"), "Annualized": ncol("%.0f%%"),
-                            "Breakeven": ncol("$%.2f"), "Cushion": ncol("%.1f%%"),
-                            "IV": ncol("%.0f%%"), "OI": st.column_config.NumberColumn(format="localized"),
-                            "Cash/contract": st.column_config.NumberColumn(format="dollar"),
-                        },
-                    )
-                    st.caption("Sorted by annualized premium yield · row shading = the stock's "
-                               "52-week position (green = near the low) · **Premium** uses the bid "
-                               "when available (conservative), else last trade · **Cushion** = drop "
-                               "absorbed before breakeven · **⚠️ Earnings** = the company reports "
-                               "before expiry (premium is rich for a reason).")
-                    put_csv = pdf_.to_csv(index=False).encode()
-                    st.download_button("📥 Download put candidates as CSV", data=put_csv,
-                                       file_name=f"csp_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                                       mime="text/csv")
-
-        with st.expander("ℹ️ How to read this — and the risks, plainly"):
-            st.markdown(
-                f"""
-**The trade.** Selling 1 cash-secured put = agreeing to buy **100 shares at the strike** any time
-until expiry, in exchange for the premium up front. You reserve the full cash (**Cash/contract**).
-It's the disciplined version of a limit order that pays you.
-
-**Reading the table.**
-
-- **Yield / Annualized** — premium ÷ strike for the period, and scaled to a year. Annualized numbers
-  flatter short expiries; they assume you can repeat the trade at the same premium, which you often
-  can't.
-- **Breakeven** — strike − premium: your true entry if assigned. Compare it to what you'd have paid
-  buying the dip outright.
-- **Cushion** — how far the stock can fall from here before the position is underwater at expiry.
-- **IV** — implied volatility: the size of the move the market is pricing. **High premium = high
-  priced-in risk, always.** There is no free yield.
-- **⚠️ Earnings before expiry** — a scheduled binary event inside your trade window; premiums are
-  larger and so are gaps.
-
-**The risks, without varnish.**
-
-- The stock can gap far below your strike — you still buy at the strike. Your real max loss is the
-  strike (minus premium) going to zero, same as owning the shares from there.
-- Assignment means tying up {"$"}strike×100 per contract — size so that being assigned on ALL
-  contracts at once is comfortable, because in a real selloff they all get assigned together.
-- Premium quotes are ~15-min delayed and spreads on thin names are wide — always work from the live
-  bid/ask in your broker, and prefer contracts with real open interest.
-- Selling puts caps your upside to the premium: if the stock rips, you keep the yield and miss the
-  move. That's the trade-off you're choosing.
-
-This screen only *finds and prices* the setups on names you already researched — it is not a
-recommendation to sell any option. Not financial advice.
+                    pdf_ = pdf_[pdf_["Cushion %"] >= float(min_cushion)] \
+                        .sort_values("Annualized %", ascending=False).head(40)
+                    if pdf_.empty:
+                        st.info(f"Nothing clears a {min_cushion}% cushion — lower the slider, or "
+                                f"accept that premiums are thin right now.")
+                    else:
+                        put_display = pd.DataFrame({
+                            "Ticker": pdf_["Ticker"], "52w": pdf_["52w Pos %"],
+                            "Spot": pdf_["Spot"], "Strike": pdf_["Strike"], "OTM": pdf_["OTM %"],
+                            "Expiry": pdf_["Expiry"], "DTE": pdf_["DTE"],
+                            "Premium": pdf_["Premium"], "Src": pdf_["Src"],
+                            "Yield": pdf_["Yield %"], "Annualized": pdf_["Annualized %"],
+                            "Breakeven": pdf_["Breakeven"], "Cushion": pdf_["Cushion %"],
+                            "IV": pdf_["IV %"], "OI": pdf_["OI"],
+                            "Cash/contract": pdf_["Cash needed"],
+                            "Earnings": pdf_["Earnings pre-expiry"],
+                        })
+                        pstyler = (put_display.style
+                                   .map(color_signed, subset=["Cushion", "Yield"])
+                                   .apply(row_bg_styler(pdf_["52w Pos %"]), axis=1))
+                        st.dataframe(
+                            pstyler, width="stretch", hide_index=True,
+                            height=(len(put_display) + 1) * 36 + 3,
+                            column_config={
+                                "52w": ncol("%.0f%%"), "Spot": ncol("$%.2f"),
+                                "Strike": ncol("$%.2f"), "OTM": ncol("%.0f%% below"),
+                                "DTE": ncol("%dd"), "Premium": ncol("$%.2f"),
+                                "Yield": ncol("%.1f%%"), "Annualized": ncol("%.0f%%"),
+                                "Breakeven": ncol("$%.2f"), "Cushion": ncol("%.1f%%"),
+                                "IV": ncol("%.0f%%"),
+                                "OI": st.column_config.NumberColumn(format="localized"),
+                                "Cash/contract": st.column_config.NumberColumn(format="dollar"),
+                            },
+                        )
+                        st.caption("Sorted by annualized premium yield · row shading = 52-week "
+                                   "position (green = near the low) · **Premium** uses the bid when "
+                                   "available (conservative) · **Cushion** = drop absorbed before "
+                                   "breakeven · **⚠️ Earnings** = report lands before expiry.")
+                        st.download_button("📥 Download put candidates as CSV",
+                                           data=pdf_.to_csv(index=False).encode(),
+                                           file_name=f"csp_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                                           mime="text/csv")
+            with st.expander("ℹ️ Cash-secured puts — mechanics & risks, plainly"):
+                st.markdown(
+                    """
+Selling 1 put = agreeing to buy **100 shares at the strike** until expiry, for the premium up front,
+with the full cash reserved (**Cash/contract**). **Breakeven** = strike − premium: your true entry if
+assigned. **Annualized** flatters short expiries — it assumes you can repeat the trade at the same
+premium, which you often can't. High premium always means high priced-in risk (see IV): there is no
+free yield. The stock can gap far below your strike — you still buy at the strike; max loss is the
+breakeven going to zero, same as owning from there. In a real selloff ALL your short puts get
+assigned together — size for that day. Quotes are delayed; work from your broker's live bid/ask.
+Selling puts caps your upside at the premium: if the stock rips, you miss the move. Not advice.
 """
-            )
+                )
+
+        # ------------------------------------------------------------------
+        # 🏠 Covered calls — rent out the names sitting near their highs
+        # ------------------------------------------------------------------
+        elif strategy == OPT_CC:
+            st.markdown("**Own 100 shares of a red-zone name?** Selling an OTM call collects premium "
+                        "now and commits you to sell at the strike (higher than today) if called away "
+                        "— a disciplined trim at a price you chose, on names stretched near their "
+                        "52-week highs.")
+            red_df = us_df[us_df["52w Pos %"].notna() & (us_df["52w Pos %"] >= 60)] \
+                .sort_values("52w Pos %", ascending=False)
+            cc1, cc2 = st.columns([3, 1.6])
+            with cc1:
+                picked_cc = st.multiselect(
+                    "Stocks to screen (pre-filled with red-zone names, nearest 52-week high first — "
+                    "only meaningful for stocks you own 100+ shares of)",
+                    options=sorted(us_df["Ticker"]), default=list(red_df["Ticker"].head(8)),
+                    max_selections=PUTS_MAX_TICKERS,
+                    help=f"Each ticker ≈3 free Yahoo calls (cached {OPTIONS_TTL//3600}h).")
+            with cc2:
+                min_ann = st.slider(
+                    "Min annualized yield %", 0, 30, 5,
+                    help="Annualized premium yield on the share position. Higher yield = closer "
+                         "strike = higher chance of being called away.")
+            if not picked_cc:
+                st.info("Pick tickers you actually hold — covered calls without the shares are naked "
+                        "calls, a different (and dangerous) trade.")
+            else:
+                spots = {s: (quotes.get(s) or {}).get("price") for s in picked_cc}
+                spots = {s: p for s, p in spots.items() if p}
+                with st.spinner(f"Fetching call chains for {len(spots)} tickers (15-65 days out)…"):
+                    by_sym = fetch_options_all(spots, "cc")
+                    earn_c = fetch_earnings_dates(list(spots))
+                cc_rows = []
+                for s_, rows_ in by_sym.items():
+                    m_ = us_df[us_df["Ticker"] == s_]
+                    pos_ = m_["52w Pos %"].iloc[0] if len(m_) else None
+                    for r_ in (rows_ or []):
+                        ed = earn_c.get(s_)
+                        cc_rows.append({
+                            "Ticker": s_, "52w Pos %": pos_,
+                            "Spot": r_["spot"], "Strike": r_["strike"],
+                            "Headroom %": r_["otm_pct"] * 100,
+                            "Expiry": r_["expiry"], "DTE": r_["dte"],
+                            "Premium": r_["premium"], "Src": r_["premium_src"],
+                            "Yield %": r_["yield"] * 100, "Annualized %": r_["annualized"] * 100,
+                            "If called %": r_["called_return"] * 100,
+                            "IV %": r_["iv"] * 100 if r_["iv"] is not None else None,
+                            "OI": r_["oi"],
+                            "Earnings pre-expiry": (f"⚠️ {ed}" if ed and today_iso <= ed <= r_["expiry"]
+                                                    else "—"),
+                        })
+                cdf_ = pd.DataFrame(cc_rows)
+                if cdf_.empty:
+                    st.info("No call candidates found — check the names have listed options, or try "
+                            "during US market hours.")
+                else:
+                    cdf_ = cdf_[cdf_["Annualized %"] >= float(min_ann)] \
+                        .sort_values("Annualized %", ascending=False).head(40)
+                    if cdf_.empty:
+                        st.info(f"Nothing yields {min_ann}%+ annualized — premiums are thin (typical "
+                                f"when volatility is becalmed). Lower the bar or wait for livelier markets.")
+                    else:
+                        cc_display = pd.DataFrame({
+                            "Ticker": cdf_["Ticker"], "52w": cdf_["52w Pos %"],
+                            "Spot": cdf_["Spot"], "Strike": cdf_["Strike"],
+                            "Headroom": cdf_["Headroom %"],
+                            "Expiry": cdf_["Expiry"], "DTE": cdf_["DTE"],
+                            "Premium": cdf_["Premium"], "Src": cdf_["Src"],
+                            "Yield": cdf_["Yield %"], "Annualized": cdf_["Annualized %"],
+                            "If called": cdf_["If called %"],
+                            "IV": cdf_["IV %"], "OI": cdf_["OI"],
+                            "Earnings": cdf_["Earnings pre-expiry"],
+                        })
+                        cstyler = (cc_display.style
+                                   .map(color_signed, subset=["Yield", "If called"])
+                                   .apply(row_bg_styler(cdf_["52w Pos %"]), axis=1))
+                        st.dataframe(
+                            cstyler, width="stretch", hide_index=True,
+                            height=(len(cc_display) + 1) * 36 + 3,
+                            column_config={
+                                "52w": ncol("%.0f%%"), "Spot": ncol("$%.2f"),
+                                "Strike": ncol("$%.2f"),
+                                "Headroom": ncol("%.0f%% up", "Room to run before the cap kicks in."),
+                                "DTE": ncol("%dd"), "Premium": ncol("$%.2f"),
+                                "Yield": ncol("%.1f%%"), "Annualized": ncol("%.0f%%"),
+                                "If called": ncol("%+.1f%%",
+                                                  "Total return if assigned: strike gain + premium."),
+                                "IV": ncol("%.0f%%"),
+                                "OI": st.column_config.NumberColumn(format="localized"),
+                            },
+                        )
+                        st.caption("Sorted by annualized premium yield · row shading = 52-week "
+                                   "position (red = near the high — the zone you're renting out) · "
+                                   "**Headroom** = upside kept before the strike caps you · "
+                                   "**If called** = total return should the shares get assigned.")
+                        st.download_button("📥 Download covered-call candidates as CSV",
+                                           data=cdf_.to_csv(index=False).encode(),
+                                           file_name=f"cc_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                                           mime="text/csv")
+            with st.expander("ℹ️ Covered calls — mechanics & risks, plainly"):
+                st.markdown(
+                    """
+1 covered call = you own **100 shares** and sell someone the right to buy them at the strike until
+expiry. You keep the premium no matter what. If the stock finishes above the strike, your shares are
+**called away** at the strike — total return = headroom + premium (**If called**), and you miss
+everything above it. That's the real cost: covered calls systematically sell your best months. The
+premium does NOT protect you on the way down — you're still long the shares with only the premium as
+buffer. Writing calls over an earnings date (⚠️) doubles the odds of being capped through a gap.
+Skip this on 10x-radar names you believe in — capping a potential multi-bagger for a few percent of
+premium is the worst trade in this app. Not advice.
+"""
+                )
+
+        # ------------------------------------------------------------------
+        # 🚀 LEAPS calls — defined-risk expression of a 10x thesis
+        # ------------------------------------------------------------------
+        else:
+            st.markdown("**Long-dated calls (9-26 months) on 10x-radar names**: instead of buying the "
+                        "shares, buy the right to. Max loss = the premium, full stop; upside "
+                        "participates in the thesis. The price: the stock must RISE past breakeven "
+                        "by expiry, or the position expires worthless.")
+            _, tenx_last = history_snapshot("tenx", 0)
+            tenx_last = tenx_last or {}
+            ranked_10x = [s for s in sorted(tenx_last, key=tenx_last.get, reverse=True)
+                          if "." not in s]
+            lp1, lp2 = st.columns([3, 1.6])
+            with lp1:
+                picked_lp = st.multiselect(
+                    "Stocks to screen (pre-filled with the current 10x Radar leaders)",
+                    options=(ranked_10x[:60] or sorted(s for s in TENX_SYMBOLS if "." not in s)),
+                    default=ranked_10x[:6],
+                    max_selections=PUTS_MAX_TICKERS,
+                    help="Ranked by 10x score. Visit the 10x Radar tab once if this list is empty.")
+            with lp2:
+                max_be = st.slider(
+                    "Max breakeven move %", 5, 40, 25,
+                    help="Only show contracts where the stock needs to rise at most this much "
+                         "by expiry to break even.")
+            if not picked_lp:
+                st.info("Pick at least one ticker — the 10x Radar tab populates the ranked list.")
+            else:
+                picked_scan = [s for s in picked_lp if s not in set(SYMBOLS)]
+                extra_q = fetch_scan_quotes(api_key, picked_scan) if picked_scan else {}
+                spots, pos_map = {}, {}
+                for s_ in picked_lp:
+                    q_ = quotes.get(s_) or extra_q.get(s_) or {}
+                    p_, lo_, hi_ = q_.get("price"), q_.get("yearLow"), q_.get("yearHigh")
+                    if p_:
+                        spots[s_] = p_
+                        pos_map[s_] = ((p_ - lo_) / (hi_ - lo_) * 100
+                                       if (lo_ is not None and hi_ and hi_ > lo_) else None)
+                with st.spinner(f"Fetching LEAPS chains for {len(spots)} tickers (9-26 months out)…"):
+                    by_sym = fetch_options_all(spots, "leaps")
+                lp_rows = []
+                for s_, rows_ in by_sym.items():
+                    for r_ in (rows_ or []):
+                        lp_rows.append({
+                            "Ticker": s_, "10x": tenx_last.get(s_), "52w Pos %": pos_map.get(s_),
+                            "Spot": r_["spot"], "Strike": r_["strike"],
+                            "Moneyness %": r_["moneyness"] * 100,
+                            "Expiry": r_["expiry"], "Months": r_["dte"] / 30.44,
+                            "Premium": r_["premium"], "Src": r_["premium_src"],
+                            "Breakeven": r_["breakeven"], "BE move %": r_["be_move"] * 100,
+                            "Cost/contract": r_["cost"], "Leverage x": r_["leverage"],
+                            "IV %": r_["iv"] * 100 if r_["iv"] is not None else None,
+                            "OI": r_["oi"],
+                        })
+                ldf_ = pd.DataFrame(lp_rows)
+                if ldf_.empty:
+                    st.info("No LEAPS found — smaller names often list nothing past ~9 months, and "
+                            "quotes can be empty outside US market hours.")
+                else:
+                    ldf_ = ldf_[ldf_["BE move %"] <= float(max_be)] \
+                        .sort_values(["BE move %"]).head(40)
+                    if ldf_.empty:
+                        st.info(f"Every contract needs more than a {max_be}% rise to break even — "
+                                f"IV on these names is expensive. Raise the slider, or take that as "
+                                f"the market's honest warning.")
+                    else:
+                        lp_display = pd.DataFrame({
+                            "Ticker": ldf_["Ticker"], "10x": ldf_["10x"], "52w": ldf_["52w Pos %"],
+                            "Spot": ldf_["Spot"], "Strike": ldf_["Strike"],
+                            "Moneyness": ldf_["Moneyness %"], "Expiry": ldf_["Expiry"],
+                            "Months": ldf_["Months"], "Premium": ldf_["Premium"], "Src": ldf_["Src"],
+                            "Breakeven": ldf_["Breakeven"], "BE move": ldf_["BE move %"],
+                            "Cost/contract": ldf_["Cost/contract"], "Leverage": ldf_["Leverage x"],
+                            "IV": ldf_["IV %"], "OI": ldf_["OI"],
+                        })
+                        lstyler = (lp_display.style
+                                   .map(color_score, subset=["10x"])
+                                   .map(color_signed, subset=["Moneyness"])
+                                   .apply(row_bg_styler(ldf_["52w Pos %"]), axis=1))
+                        st.dataframe(
+                            lstyler, width="stretch", hide_index=True,
+                            height=(len(lp_display) + 1) * 36 + 3,
+                            column_config={
+                                "10x": ncol("%.0f", "10x Radar score (latest snapshot)."),
+                                "52w": ncol("%.0f%%"), "Spot": ncol("$%.2f"),
+                                "Strike": ncol("$%.2f"),
+                                "Moneyness": ncol("%+.0f%%", "Strike vs spot: + = OTM, − = ITM."),
+                                "Months": ncol("%.0fmo"), "Premium": ncol("$%.2f"),
+                                "Breakeven": ncol("$%.2f"),
+                                "BE move": ncol("%+.0f%%",
+                                                "Rise needed by expiry just to break even."),
+                                "Cost/contract": st.column_config.NumberColumn(format="dollar"),
+                                "Leverage": ncol("%.1fx",
+                                                 "Share exposure per premium dollar (not delta-adjusted)."),
+                                "IV": ncol("%.0f%%"),
+                                "OI": st.column_config.NumberColumn(format="localized"),
+                            },
+                        )
+                        st.caption("Sorted by smallest breakeven move · **Premium** uses the ask "
+                                   "(you're the buyer) · **Cost/contract** is also your max loss · "
+                                   "row shading = 52-week position.")
+                        st.download_button("📥 Download LEAPS candidates as CSV",
+                                           data=ldf_.to_csv(index=False).encode(),
+                                           file_name=f"leaps_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                                           mime="text/csv")
+            with st.expander("ℹ️ LEAPS calls — mechanics & risks, plainly"):
+                st.markdown(
+                    """
+A LEAPS call is the right (not obligation) to buy 100 shares at the strike until an expiry 1-2 years
+out. **Max loss = the premium — and losing it all is a normal outcome**, not a tail case: the stock
+can rise slower than breakeven, chop sideways, or dip at the wrong moment, and the option still goes
+to zero while the shareholder is fine. **BE move** is the honest hurdle: it's how much of your thesis
+is already consumed by the option's price. IV on exactly the exciting radar names is expensive —
+you're buying the thesis at a premium after the market noticed. LEAPS pay no dividends, and thin OI
+means wide spreads (check **OI** before trusting the price). Position-size rule of thumb: money you'd
+be genuinely fine watching go to zero. Not advice.
+"""
+                )
         st.divider()
