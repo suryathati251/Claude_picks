@@ -74,6 +74,19 @@ def _expiries_between(tk, dte_min: int, dte_max: int, limit: int,
     return out[:limit]
 
 
+def live_spot(symbol: str) -> Optional[float]:
+    """Near-live price via yfinance fast_info (keyless, ~15-min delayed). Used
+    by the options screens so contracts are never priced off a stale cache.
+    None on any failure — callers fall back to their cached quote."""
+    if not HAVE_YF:
+        return None
+    try:
+        v = _f(getattr(yf.Ticker(symbol).fast_info, "last_price", None))
+        return v if v and v > 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def fetch_put_candidates(symbol: str, spot: Optional[float]) -> list[dict]:
     """Best cash-secured-put candidates for one ticker (strikes at/below spot,
     15-65 DTE), ranked by annualized premium yield. [] on any failure or when

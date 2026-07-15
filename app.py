@@ -71,7 +71,7 @@ from entry_meter import fetch_entry_history_yahoo, compute_entry_meter
 from insider import fetch_insider, insider_display
 from options_income import (fetch_put_candidates, fetch_call_candidates,
                             fetch_leaps_candidates, fetch_wheel_candidates,
-                            fetch_put_spread_candidates)
+                            fetch_put_spread_candidates, live_spot)
 import market_risk
 
 _seen = {item["ticker"] for item in _BASE_WATCHLIST}
@@ -84,7 +84,7 @@ SECTORS = {item["ticker"]: item["sector"] for item in WATCHLIST}
 FAM_ABBR = {"Value": "V", "Quality": "Q", "Growth": "G", "Momentum": "M", "Safety": "S", "Moat": "Moat"}
 
 FMP_BASE = "https://financialmodelingprep.com/stable"
-QUOTE_TTL = 6 * 60 * 60
+QUOTE_TTL = int(os.getenv("QUOTE_TTL_MIN", "60")) * 60   # fresh-ish prices in market hours
 FUND_TTL = 14 * 24 * 60 * 60
 YF_FUND_TTL = 3 * 24 * 60 * 60   # Yahoo-sourced fundamentals expire sooner so FMP can replace them
 MARKET_TTL = 6 * 60 * 60
@@ -96,7 +96,10 @@ SCAN_QUOTE_TTL = 24 * 60 * 60    # scan-universe quotes only need daily freshnes
 # Budget is in TICKERS per refresh; each ticker costs CALLS_PER_TICKER FMP calls.
 # Default keeps one full refresh comfortably inside the 250-calls/day free tier
 # (70 × 3 = 210, plus a handful of quote/market calls).
-_DEFAULT_BUDGET = min(len(WATCHLIST), max(10, (250 - 10) // CALLS_PER_TICKER))
+# Reserve ~45 daily FMP calls for quotes (hourly batches), market context,
+# scan-universe batches and the insider budget, so fundamentals can never
+# starve the price layer into staleness.
+_DEFAULT_BUDGET = min(len(WATCHLIST), max(10, (250 - 45) // CALLS_PER_TICKER))
 FUND_BUDGET = int(os.getenv("FMP_FUND_BUDGET", str(_DEFAULT_BUDGET)))
 YF_BUDGET = int(os.getenv("YF_FUND_BUDGET", "60"))  # Yahoo fallback fills per run
 BATCH_SIZE = 50
@@ -579,29 +582,52 @@ def fetch_surprises(symbols):
     return out
 
 
+def fetch_live_spots(symbols):
+    """Near-live spots (yfinance fast_info, keyless) for a SMALL list — the
+    options screens must never price contracts off a stale cached quote.
+    Returns only the symbols Yahoo answered for; callers fall back to cache."""
+    if not (HAVE_YF and symbols):
+        return {}
+    out = {}
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futs = {ex.submit(live_spot, s): s for s in symbols}
+        for fut in as_completed(futs):
+            try:
+                v = fut.result()
+            except Exception:  # noqa: BLE001
+                v = None
+            if v:
+                out[futs[fut]] = v
+    return out
+
+
 def fetch_options_all(spots_by_symbol, strategy, budget=PUTS_MAX_TICKERS):
-    """Option candidates per ticker for one strategy ('csp'/'cc'/'leaps').
-    Yahoo chains (keyless), disk-cached 4h per (strategy, ticker), at most
-    `budget` tickers fetched fresh per load."""
+    """Option candidates per ticker for one strategy ('csp'/'cc'/'leaps'/...).
+    Yahoo chains (keyless), disk-cached 4h per (strategy, ticker) — but a cache
+    entry is also invalidated when the underlying has MOVED >2% since it was
+    built, so strikes/cushions never reflect a stale spot."""
     fetcher = _OPT_FETCHERS[strategy]
     store = options_store()
     now = time.time()
     out, need = {}, []
     for s, spot in spots_by_symbol.items():
         e = store.get(f"{strategy}:{s}")
-        if _fresh(e, OPTIONS_TTL):
+        cached_spot = (e or {}).get("spot")
+        drift_ok = (cached_spot and spot
+                    and abs(spot / cached_spot - 1.0) <= 0.02)
+        if _fresh(e, OPTIONS_TTL) and drift_ok:
             out[s] = e["data"]
         else:
             need.append((s, spot))
     if need and HAVE_YF:
         def work(sym, spot):
-            return sym, fetcher(sym, spot)
+            return sym, spot, fetcher(sym, spot)
         fetched = 0
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             futs = [ex.submit(work, s, sp) for s, sp in need[:max(0, budget)]]
             for fut in as_completed(futs):
-                sym, res = fut.result()
-                store.set(f"{strategy}:{sym}", {"data": res, "ts": now})
+                sym, sp, res = fut.result()
+                store.set(f"{strategy}:{sym}", {"data": res, "ts": now, "spot": sp})
                 out[sym] = res
                 fetched += 1
         if fetched:
@@ -759,7 +785,7 @@ with col_b:
                  help=f"Pull the next {FUND_BUDGET} tickers' fundamentals into the cache."):
         st.session_state.force_refresh = "funds"; st.rerun()
 with col_c:
-    st.caption(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · prices cached {QUOTE_TTL//3600}h · "
+    st.caption(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · prices cached {QUOTE_TTL//60}min · "
                f"fundamentals cached {FUND_TTL//86400}d · budget {FUND_BUDGET}/refresh")
 
 _force = st.session_state.force_refresh
@@ -769,6 +795,17 @@ force_funds = _force in ("funds", True)
 
 with st.spinner("Loading prices…"):
     quotes, q_fetched, q_cached, q_rl = fetch_quotes(api_key, SYMBOLS, force_prices)
+
+# Surface price AGE honestly — quota exhaustion used to freeze prices silently.
+_qstore = quote_store()
+_ages = [time.time() - (_qstore.get(s) or {}).get("ts", 0)
+         for s in SYMBOLS if _qstore.get(s)]
+_stale_h = (max(_ages) / 3600) if _ages else None
+if _stale_h and _stale_h > 24:
+    st.warning(f"⚠️ Some cached prices are up to **{_stale_h:.0f}h old** — the FMP quota was likely "
+               f"exhausted before they could refresh (Yahoo fills what it can). The Options tab "
+               f"fetches near-live spots independently; treat watchlist/radar prices as indicative "
+               f"and hit **🔄 Refresh prices**.")
 
 market_caps = {s: (quotes.get(s) or {}).get("marketCap") for s in SYMBOLS}
 
@@ -1608,7 +1645,8 @@ elif nav == NAV_PUTS:
                 st.info("Pick at least one ticker — green-zone names usually carry the richest, "
                         "most rational premiums for this strategy.")
             else:
-                spots = {s: (quotes.get(s) or {}).get("price") for s in picked}
+                _live = fetch_live_spots(picked)
+                spots = {s: (_live.get(s) or (quotes.get(s) or {}).get("price")) for s in picked}
                 spots = {s: p for s, p in spots.items() if p}
                 with st.spinner(f"Fetching put chains for {len(spots)} tickers (15-65 days out)…"):
                     by_sym = fetch_options_all(spots, "csp")
@@ -1719,7 +1757,8 @@ Selling puts caps your upside at the premium: if the stock rips, you miss the mo
                 st.info("Pick tickers you actually hold — covered calls without the shares are naked "
                         "calls, a different (and dangerous) trade.")
             else:
-                spots = {s: (quotes.get(s) or {}).get("price") for s in picked_cc}
+                _live = fetch_live_spots(picked_cc)
+                spots = {s: (_live.get(s) or (quotes.get(s) or {}).get("price")) for s in picked_cc}
                 spots = {s: p for s, p in spots.items() if p}
                 with st.spinner(f"Fetching call chains for {len(spots)} tickers (15-65 days out)…"):
                     by_sym = fetch_options_all(spots, "cc")
@@ -1835,10 +1874,12 @@ premium is the worst trade in this app. Not advice.
             else:
                 picked_scan = [s for s in picked_lp if s not in set(SYMBOLS)]
                 extra_q = fetch_scan_quotes(api_key, picked_scan) if picked_scan else {}
+                _live = fetch_live_spots(picked_lp)
                 spots, pos_map = {}, {}
                 for s_ in picked_lp:
                     q_ = quotes.get(s_) or extra_q.get(s_) or {}
-                    p_, lo_, hi_ = q_.get("price"), q_.get("yearLow"), q_.get("yearHigh")
+                    p_ = _live.get(s_) or q_.get("price")
+                    lo_, hi_ = q_.get("yearLow"), q_.get("yearHigh")
                     if p_:
                         spots[s_] = p_
                         pos_map[s_] = ((p_ - lo_) / (hi_ - lo_) * 100
@@ -1972,7 +2013,8 @@ be genuinely fine watching go to zero. Not advice.
             if not picked_w:
                 st.info("Pick at least one ticker.")
             else:
-                spots = {s: (quotes.get(s) or {}).get("price") for s in picked_w}
+                _live = fetch_live_spots(picked_w)
+                spots = {s: (_live.get(s) or (quotes.get(s) or {}).get("price")) for s in picked_w}
                 spots = {s: p for s, p in spots.items() if p}
                 with st.spinner(f"Testing ~30Δ/30DTE puts on {len(spots)} tickers…"):
                     by_sym = fetch_options_all(spots, "wheel")
@@ -2104,15 +2146,15 @@ delayed IV, so treat the Δ column as approximate and confirm greeks in your bro
             if not picked_s:
                 st.info("Pick at least one underlying — ^XSP is the wash-sale-free default.")
             else:
+                _live = fetch_live_spots(picked_s)
                 spots = {}
                 for s_ in picked_s:
                     if s_ in idx_spots:
-                        if idx_spots[s_]:
-                            spots[s_] = idx_spots[s_]
+                        p_ = _live.get(s_) or idx_spots[s_]
                     else:
-                        p_ = (quotes.get(s_) or {}).get("price")
-                        if p_:
-                            spots[s_] = p_
+                        p_ = _live.get(s_) or (quotes.get(s_) or {}).get("price")
+                    if p_:
+                        spots[s_] = p_
                 if len(spots) < len(picked_s):
                     missing_ = [s for s in picked_s if s not in spots]
                     st.caption("No spot price yet for: " + ", ".join(missing_) +
