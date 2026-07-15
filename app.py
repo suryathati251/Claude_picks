@@ -249,9 +249,12 @@ def _fund_fresh(entry):
 # Price layer — batch-quote (per-ticker fallback)
 # ---------------------------------------------------------------------------
 def _looks_rate_limited(text: str) -> bool:
+    """True only for GENUINE quota exhaustion (daily limit / 429 / bandwidth).
+    FMP's plan-restriction message ('Exclusive Endpoint ... upgrade your plan')
+    must NOT match: it used to, and one premium-only endpoint reply made the
+    app abort all fetching and show 'quota reached' at 32/250 real calls."""
     t = (text or "").lower()
-    return ("limit reach" in t or "upgrade your plan" in t
-            or "too many requests" in t or "bandwidth" in t)
+    return "limit reach" in t or "too many requests" in t or "bandwidth" in t
 
 
 def _num(rec: dict, *keys):
@@ -337,7 +340,10 @@ def fetch_quotes(api_key, symbols, force):
                 for row in rows:
                     if row.get("symbol"):
                         got[row["symbol"]] = _norm_quote(row)
-                if not rows:  # batch unsupported on this plan -> per-ticker
+                if not rows and len(need) <= 20:
+                    # Batch unsupported on this plan -> per-ticker, but ONLY for
+                    # small needs (single-ticker lookups). A big stale set would
+                    # burn 100+ calls here; Yahoo's bulk refresh below handles it.
                     for sym in chunk:
                         row = _single_quote(sym, api_key)
                         if row:
@@ -349,13 +355,27 @@ def fetch_quotes(api_key, symbols, force):
         for sym, d in got.items():
             store.set(sym, {"data": d, "ts": now}); quotes[sym] = d; fetched += 1
 
-        # Yahoo fallback: any symbol STILL without a price (FMP quota spent,
-        # plan doesn't include it, etc.) gets filled keylessly and cached.
-        missing = [s for s in need if (quotes.get(s) or {}).get("price") is None]
-        if missing and HAVE_YF:
-            for sym, d in fetch_quotes_yahoo(missing).items():
+        # Yahoo fallback for EVERYTHING FMP couldn't refresh this round — both
+        # symbols with no price at all AND symbols with a stale cached price.
+        # (The old "missing only" check let a stale price block its own refresh:
+        # CRWV sat on a Friday close for days once the FMP quota was spent.)
+        still_stale = [s for s in need if s not in got]
+        if still_stale and HAVE_YF:
+            lite = fetch_quotes_yahoo(still_stale, with_mcap=False)
+            for sym, d in lite.items():
+                old = quotes.get(sym) or {}
+                if d.get("marketCap") is None:
+                    d["marketCap"] = old.get("marketCap")   # keep last known mcap
+                if d.get("pe") is None:
+                    d["pe"] = old.get("pe")
                 store.set(sym, {"data": d, "ts": now, "src": "yahoo"})
                 quotes[sym] = d; fetched += 1
+            # brand-new symbols Yahoo priced but that never had an FMP mcap:
+            no_mcap = [s for s in lite if (quotes.get(s) or {}).get("marketCap") is None]
+            if no_mcap and len(no_mcap) <= 25:
+                for sym, d in fetch_quotes_yahoo(no_mcap, with_mcap=True).items():
+                    store.set(sym, {"data": d, "ts": now, "src": "yahoo"})
+                    quotes[sym] = d
         store.flush()
     return quotes, fetched, from_cache, rate_limited
 
@@ -483,10 +503,17 @@ def fetch_scan_quotes(api_key, symbols):
         logger.info("scan quotes: FMP rate-limited — Yahoo will fill")
     except requests.RequestException as e:
         logger.warning("scan quotes failed (%s) — Yahoo will fill", str(e)[:120])
-    missing = [s for s in need
-               if s not in got and (quotes.get(s) or {}).get("price") is None]
-    if missing and HAVE_YF:
-        got.update(fetch_quotes_yahoo(missing))
+    # Yahoo-refresh every scan symbol FMP couldn't deliver (stale OR missing) —
+    # one bulk download, no per-ticker mcap calls; old market caps carry over.
+    still_stale = [s for s in need if s not in got]
+    if still_stale and HAVE_YF:
+        for sym, d in fetch_quotes_yahoo(still_stale, with_mcap=False).items():
+            old = quotes.get(sym) or {}
+            if d.get("marketCap") is None:
+                d["marketCap"] = old.get("marketCap")
+            if d.get("pe") is None:
+                d["pe"] = old.get("pe")
+            got[sym] = d
     for sym, d in got.items():
         store.set(sym, {"data": d, "ts": now})
         quotes[sym] = d

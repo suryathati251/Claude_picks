@@ -25,9 +25,10 @@ _TIMEOUT = 12
 
 
 def _looks_rate_limited(text: str) -> bool:
+    """Genuine quota exhaustion only — plan-restriction messages that merely
+    say 'upgrade your plan' are endpoint availability, not quota."""
     t = (text or "").lower()
-    return ("limit reach" in t or "upgrade your plan" in t
-            or "too many requests" in t or "bandwidth" in t)
+    return "limit reach" in t or "too many requests" in t or "bandwidth" in t
 
 
 def _quote(symbol: str, api_key: str) -> tuple[Optional[dict], bool]:

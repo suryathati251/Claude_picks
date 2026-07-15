@@ -201,9 +201,11 @@ def edge_ev_ebit(market_cap: Optional[float], total_debt: Optional[float],
 # Low-level fetch helpers
 # ---------------------------------------------------------------------------
 def _looks_rate_limited(text: str) -> bool:
+    """Genuine quota exhaustion only. FMP's 'Exclusive Endpoint ... upgrade
+    your plan' (plan restriction) must not count as rate-limited — treating it
+    as quota froze all fetching while the real quota sat nearly unused."""
     t = (text or "").lower()
-    return ("limit reach" in t or "upgrade your plan" in t
-            or "too many requests" in t or "bandwidth" in t)
+    return "limit reach" in t or "too many requests" in t or "bandwidth" in t
 
 
 def _get(url: str, params: dict, symbol: str, what: str):

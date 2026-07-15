@@ -52,9 +52,13 @@ def _f(v) -> Optional[float]:
 # ---------------------------------------------------------------------------
 # Quotes
 # ---------------------------------------------------------------------------
-def fetch_quotes_yahoo(symbols: list[str]) -> dict[str, dict]:
+def fetch_quotes_yahoo(symbols: list[str], with_mcap: bool = True) -> dict[str, dict]:
     """Return {symbol: quote-dict} in the same shape app.py's _norm_quote emits.
-    Missing tickers are simply absent. Never raises."""
+    Missing tickers are simply absent. Never raises.
+
+    with_mcap=False skips the per-ticker fast_info market-cap calls — one bulk
+    price download only. Use it when refreshing STALE quotes for many symbols
+    (price freshness is the point; the caller keeps the old market cap)."""
     if not HAVE_YF or not symbols:
         return {}
     out: dict[str, dict] = {}
@@ -94,12 +98,13 @@ def fetch_quotes_yahoo(symbols: list[str]) -> dict[str, dict]:
             continue
 
     # market cap + trailing P/E via fast_info (cheap, no .info scrape)
-    for sym in list(out.keys()):
-        try:
-            fi = yf.Ticker(sym).fast_info
-            out[sym]["marketCap"] = _f(getattr(fi, "market_cap", None))
-        except Exception:  # noqa: BLE001
-            pass
+    if with_mcap:
+        for sym in list(out.keys()):
+            try:
+                fi = yf.Ticker(sym).fast_info
+                out[sym]["marketCap"] = _f(getattr(fi, "market_cap", None))
+            except Exception:  # noqa: BLE001
+                pass
     return out
 
 
