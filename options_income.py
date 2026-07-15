@@ -21,6 +21,7 @@ strike. Premium yields look best exactly when the market prices real risk.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, datetime
 from typing import Optional
 
@@ -216,3 +217,73 @@ def fetch_leaps_candidates(symbol: str, spot: Optional[float]) -> list[dict]:
             })
     rows.sort(key=lambda r: r["be_move"])
     return rows[:PER_TICKER_ROWS]
+
+
+# ---------------------------------------------------------------------------
+# Wheel strategy — ~30-delta / ~30-DTE puts (premium test: >=1.5% per cycle)
+# ---------------------------------------------------------------------------
+RISK_FREE = 0.04          # r for the delta approximation; precision hardly matters
+WHEEL_DTE_MIN, WHEEL_DTE_MAX = 20, 45
+WHEEL_DELTA_LO, WHEEL_DELTA_HI = -0.37, -0.23   # "around 30 delta"
+
+
+def put_delta(spot: float, strike: float, iv: Optional[float],
+              dte: int) -> Optional[float]:
+    """Black-Scholes put delta from the chain's implied volatility (Yahoo ships
+    IV but no greeks). Negative number in [-1, 0]; None when IV is unusable."""
+    if not spot or not strike or iv is None or iv <= 0 or dte <= 0:
+        return None
+    t = dte / 365.0
+    try:
+        d1 = (math.log(spot / strike) + (RISK_FREE + iv * iv / 2.0) * t) / (iv * math.sqrt(t))
+    except (ValueError, ZeroDivisionError):
+        return None
+    return 0.5 * (1.0 + math.erf(d1 / math.sqrt(2.0))) - 1.0
+
+
+def fetch_wheel_candidates(symbol: str, spot: Optional[float]) -> list[dict]:
+    """WHEEL puts: ~30-delta, ~30-DTE cash-secured puts — the entry leg of the
+    wheel. Returns the best contracts by premium return per cycle
+    (premium / strike), the number the 1.5% criterion tests."""
+    if not HAVE_YF or not spot or spot <= 0:
+        return []
+    try:
+        tk = yf.Ticker(symbol)
+    except Exception:  # noqa: BLE001
+        return []
+    expiries = _expiries_between(tk, WHEEL_DTE_MIN, WHEEL_DTE_MAX, 3)
+    expiries.sort(key=lambda t: abs(t[1] - 30))          # closest to 30 DTE first
+    rows: list[dict] = []
+    for expiry, dte in expiries[:2]:
+        try:
+            puts = tk.option_chain(expiry).puts
+        except Exception as e:  # noqa: BLE001
+            logger.warning("%s %s: wheel chain failed: %s", symbol, expiry, str(e)[:100])
+            continue
+        if puts is None or getattr(puts, "empty", True):
+            continue
+        for _, r in puts.iterrows():
+            strike = _f(r.get("strike"))
+            iv = _f(r.get("impliedVolatility"))
+            if strike is None or strike > spot:
+                continue
+            delta = put_delta(spot, strike, iv, dte)
+            if delta is None or not (WHEEL_DELTA_LO <= delta <= WHEEL_DELTA_HI):
+                continue
+            bid, last = _f(r.get("bid")) or 0.0, _f(r.get("lastPrice")) or 0.0
+            premium = bid if bid > 0 else last
+            if premium < MIN_PREMIUM:
+                continue
+            ret = premium / strike                        # the wheel's cycle return
+            rows.append({
+                "symbol": symbol, "spot": spot, "strike": strike, "delta": delta,
+                "expiry": expiry, "dte": dte,
+                "premium": premium, "premium_src": "bid" if bid > 0 else "last",
+                "cycle_return": ret,
+                "annualized": ret * 365.0 / max(dte, 1),
+                "breakeven": strike - premium,
+                "iv": iv, "oi": int(_f(r.get("openInterest")) or 0),
+                "cash_needed": strike * 100.0,
+            })
+    rows.sort(key=lambda r: r["cycle_return"], reverse=True)
+    return rows[:4]

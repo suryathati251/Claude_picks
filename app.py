@@ -66,11 +66,11 @@ from yahoo_fallback import (
 )
 from tenx_universe import SCAN_SYMBOLS, SCAN_NAMES, SCAN_SECTORS
 from tenx_radar import (fetch_quarterly_yahoo, compute_tenx_metrics, tenx_score,
-                        fetch_next_earnings)
+                        fetch_next_earnings, fetch_last_earnings_surprise)
 from entry_meter import fetch_entry_history_yahoo, compute_entry_meter
 from insider import fetch_insider, insider_display
 from options_income import (fetch_put_candidates, fetch_call_candidates,
-                            fetch_leaps_candidates)
+                            fetch_leaps_candidates, fetch_wheel_candidates)
 import market_risk
 
 _seen = {item["ticker"] for item in _BASE_WATCHLIST}
@@ -547,7 +547,29 @@ def fmt_earnings(iso: Optional[str]) -> str:
 
 
 _OPT_FETCHERS = {"csp": fetch_put_candidates, "cc": fetch_call_candidates,
-                 "leaps": fetch_leaps_candidates}
+                 "leaps": fetch_leaps_candidates, "wheel": fetch_wheel_candidates}
+
+
+def fetch_surprises(symbols):
+    """Last-quarter EPS surprise % per ticker (negative = missed estimates),
+    Yahoo, cached 3 days in the earnings store under 'surprise:' keys."""
+    if not HAVE_YF:
+        return {}
+    store = earnings_store()
+    now = time.time()
+    out, need = {}, []
+    for s in symbols:
+        e = store.get(f"surprise:{s}")
+        if _fresh(e, EARN_TTL):
+            out[s] = e["data"]
+        else:
+            need.append(s)
+    for s in need:
+        out[s] = fetch_last_earnings_surprise(s)
+        store.set(f"surprise:{s}", {"data": out[s], "ts": now})
+    if need:
+        store.flush()
+    return out
 
 
 def fetch_options_all(spots_by_symbol, strategy, budget=PUTS_MAX_TICKERS):
@@ -1546,7 +1568,8 @@ elif nav == NAV_PUTS:
         OPT_CSP = "🛡️ Cash-secured puts"
         OPT_CC = "🏠 Covered calls"
         OPT_LEAPS = "🚀 LEAPS calls"
-        strategy = st.radio("strategy", [OPT_CSP, OPT_CC, OPT_LEAPS], horizontal=True,
+        OPT_WHEEL = "🎡 Wheel screen"
+        strategy = st.radio("strategy", [OPT_CSP, OPT_CC, OPT_LEAPS, OPT_WHEEL], horizontal=True,
                             key="opt_strategy", label_visibility="collapsed")
         us_df = df[(df["Region"] == "US") & df["Price"].notna()]
         today_iso = datetime.now().date().isoformat()
@@ -1777,7 +1800,7 @@ premium is the worst trade in this app. Not advice.
         # ------------------------------------------------------------------
         # 🚀 LEAPS calls — defined-risk expression of a 10x thesis
         # ------------------------------------------------------------------
-        else:
+        elif strategy == OPT_LEAPS:
             st.markdown("**Long-dated calls (9-26 months) on 10x-radar names**: instead of buying the "
                         "shares, buy the right to. Max loss = the premium, full stop; upside "
                         "participates in the thesis. The price: the stock must RISE past breakeven "
@@ -1890,6 +1913,152 @@ is already consumed by the option's price. IV on exactly the exciting radar name
 you're buying the thesis at a premium after the market noticed. LEAPS pay no dividends, and thin OI
 means wide spreads (check **OI** before trusting the price). Position-size rule of thumb: money you'd
 be genuinely fine watching go to zero. Not advice.
+"""
+                )
+
+        # ------------------------------------------------------------------
+        # 🎡 Wheel screen — the spreadsheet criteria, automated
+        # ------------------------------------------------------------------
+        else:
+            st.markdown(
+                "**Your wheel-sheet criteria, automated.** ✅ requires all three: **uptrend** (price "
+                "above its 200-day average AND positive 12-1-month momentum), **sane valuation** "
+                "(0 < P/E < 100; negative or missing P/E passes only with net cash), and **premium** "
+                "≥ your bar at **~30 delta / ~30 DTE** (delta computed from each contract's IV). "
+                "🟨 yellow rows missed EPS estimates last quarter — your sheet's highlight rule."
+            )
+            # Stock-level criteria from data already in memory.
+            crit = {}
+            for s_ in us_df["Ticker"]:
+                q_ = quotes.get(s_) or {}
+                f_ = fundamentals.get(s_) or {}
+                p_, ma_, pe_ = q_.get("price"), q_.get("ma200"), q_.get("pe")
+                mom_ = mom_12_1.get(s_)
+                trend_ok = bool(p_ and ma_ and p_ > ma_ and (mom_ is None or mom_ > 0))
+                net_cash = ((f_.get("net_debt_ebitda") is not None and f_["net_debt_ebitda"] < 0)
+                            or (f_.get("debt_equity") is not None and f_["debt_equity"] < 0.10))
+                if pe_ is None or pe_ <= 0:
+                    pe_ok = net_cash
+                else:
+                    pe_ok = pe_ < 100 or net_cash
+                crit[s_] = {"trend": trend_ok, "pe_ok": pe_ok, "pe": pe_, "net_cash": net_cash}
+
+            passing = [s for s, c in crit.items() if c["trend"] and c["pe_ok"]]
+            passing.sort(key=lambda s: (mom_12_1.get(s) if mom_12_1.get(s) is not None else -9),
+                         reverse=True)
+            wc1, wc2 = st.columns([3, 1.6])
+            with wc1:
+                picked_w = st.multiselect(
+                    "Stocks to screen (pre-filled with names passing the trend + valuation tests, "
+                    "strongest momentum first)",
+                    options=sorted(us_df["Ticker"]), default=passing[:10],
+                    max_selections=PUTS_MAX_TICKERS,
+                    help="Add names that fail the stock tests if you want — the ✅/❌ columns "
+                         "will show exactly which criterion they miss.")
+            with wc2:
+                min_cycle = st.slider(
+                    "Min premium per cycle %", 0.5, 3.0, 1.5, 0.25,
+                    help="Your sheet's bar: premium ÷ strike for one ~30-day cycle. "
+                         "1.5% ≈ 18%+ annualized if repeatable.")
+
+            if not picked_w:
+                st.info("Pick at least one ticker.")
+            else:
+                spots = {s: (quotes.get(s) or {}).get("price") for s in picked_w}
+                spots = {s: p for s, p in spots.items() if p}
+                with st.spinner(f"Testing ~30Δ/30DTE puts on {len(spots)} tickers…"):
+                    by_sym = fetch_options_all(spots, "wheel")
+                    surprises = fetch_surprises(list(spots))
+                w_rows, no_chain = [], []
+                for s_ in picked_w:
+                    rows_ = by_sym.get(s_) or []
+                    c_ = crit.get(s_, {"trend": False, "pe_ok": False, "pe": None, "net_cash": False})
+                    if not rows_:
+                        no_chain.append(s_)
+                        continue
+                    best = rows_[0]                      # highest cycle return in the Δ band
+                    surp = surprises.get(s_)
+                    meets = best["cycle_return"] * 100 >= min_cycle
+                    w_rows.append({
+                        "_ok": c_["trend"] and c_["pe_ok"] and meets,
+                        "_missed": surp is not None and surp < 0,
+                        "Ticker": s_,
+                        "Wheel": "✅" if (c_["trend"] and c_["pe_ok"] and meets) else "❌",
+                        "Trend": "✅" if c_["trend"] else "❌",
+                        "P/E": c_["pe"],
+                        "Val": "✅" if c_["pe_ok"] else "❌",
+                        "Net cash": "💰" if c_["net_cash"] else "—",
+                        "Last qtr %": surp,
+                        "Spot": best["spot"], "Strike": best["strike"], "Δ": best["delta"],
+                        "Expiry": best["expiry"], "DTE": best["dte"],
+                        "Premium": best["premium"], "Src": best["premium_src"],
+                        "Cycle %": best["cycle_return"] * 100,
+                        "Annualized %": best["annualized"] * 100,
+                        "Breakeven": best["breakeven"],
+                        "IV %": best["iv"] * 100 if best["iv"] is not None else None,
+                        "OI": best["oi"], "Cash needed": best["cash_needed"],
+                    })
+                if no_chain:
+                    st.caption("No ~30Δ/30DTE put found (no listed options, empty quotes outside "
+                               "market hours, or IV unusable): " + ", ".join(no_chain))
+                wdf_ = pd.DataFrame(w_rows)
+                if wdf_.empty:
+                    st.info("No contracts to test — try during US market hours.")
+                else:
+                    wdf_ = wdf_.sort_values(["_ok", "Cycle %"], ascending=[False, False])
+                    missed_map = wdf_["_missed"]
+
+                    def _wheel_bg(row):
+                        return (["background-color: rgba(250, 204, 21, 0.30);"] * len(row)
+                                if missed_map.get(row.name) else [""] * len(row))
+
+                    w_display = wdf_.drop(columns=["_ok", "_missed"])
+                    wstyler = (w_display.style
+                               .map(color_signed, subset=["Last qtr %", "Cycle %"])
+                               .apply(_wheel_bg, axis=1))
+                    st.dataframe(
+                        wstyler, width="stretch", hide_index=True,
+                        height=(len(w_display) + 1) * 36 + 3,
+                        column_config={
+                            "P/E": ncol("%.1f"),
+                            "Last qtr %": ncol("%+.1f%%", "EPS surprise last reported quarter; "
+                                                          "negative = missed (yellow row)."),
+                            "Spot": ncol("$%.2f"), "Strike": ncol("$%.2f"),
+                            "Δ": ncol("%.2f", "Black-Scholes put delta from the contract's IV."),
+                            "DTE": ncol("%dd"), "Premium": ncol("$%.2f"),
+                            "Cycle %": ncol("%.2f%%", "Premium ÷ strike for this cycle — "
+                                                      "your sheet's 1.5% test."),
+                            "Annualized %": ncol("%.0f%%"), "Breakeven": ncol("$%.2f"),
+                            "IV %": ncol("%.0f%%"),
+                            "OI": st.column_config.NumberColumn(format="localized"),
+                            "Cash needed": st.column_config.NumberColumn(format="dollar"),
+                        },
+                    )
+                    n_pass = int(wdf_["_ok"].sum())
+                    st.caption(f"**{n_pass}/{len(wdf_)}** picked names pass all three wheel tests at "
+                               f"a {min_cycle}% cycle bar · best ~30Δ contract shown per ticker · "
+                               f"🟨 = missed estimates last quarter · sorted pass-first, richest "
+                               f"premium first.")
+                    st.download_button("📥 Download wheel screen as CSV",
+                                       data=wdf_.drop(columns=["_ok", "_missed"])
+                                       .to_csv(index=False).encode(),
+                                       file_name=f"wheel_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                                       mime="text/csv")
+            with st.expander("ℹ️ How the sheet's criteria map here — and wheel risks"):
+                st.markdown(
+                    """
+**Criterion → implementation.** *"Clear upward trend over 1.5 years"* → price above its 200-day
+average AND positive 12-minus-1-month momentum (long uptrends keep both true; a fresh breakdown
+fails fast). *"P/E under 100 or strong cash reserves, no negative P/E"* → 0 < P/E < 100 passes;
+negative/missing P/E passes only with net cash (💰); P/E ≥ 100 passes only with net cash.
+*"Min 1.5% return using 30 delta / 30 DTE"* → best put with Black-Scholes delta between −0.23 and
+−0.37, 20-45 days out, premium ÷ strike vs your slider. *"Highlighted if missed a quarter"* →
+🟨 row when the last reported EPS came in under estimates.
+
+**Wheel risks.** The wheel earns steady premium until a real downtrend, when you're assigned into
+falling names and the "income" becomes an unrealized loss you then write calls against below cost.
+The trend test is the guard — respect it when it flips ❌ mid-position. Delta here is computed from
+delayed IV, so treat the Δ column as approximate and confirm greeks in your broker. Not advice.
 """
                 )
         st.divider()

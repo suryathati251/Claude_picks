@@ -140,6 +140,29 @@ def fetch_next_earnings(symbol: str) -> Optional[str]:
     return future[0] if future else iso[-1]
 
 
+def fetch_last_earnings_surprise(symbol: str) -> Optional[float]:
+    """EPS surprise (%) of the most recent REPORTED quarter, from Yahoo's
+    earnings history. Negative = the company missed estimates. None when
+    unavailable. Never raises."""
+    if not HAVE_YF:
+        return None
+    try:
+        df = yf.Ticker(symbol).get_earnings_dates(limit=8)
+    except Exception:  # noqa: BLE001
+        return None
+    if df is None or getattr(df, "empty", True):
+        return None
+    try:
+        for idx in df.index:                      # newest first
+            rep = df.loc[idx].get("Reported EPS")
+            if rep is not None and rep == rep:    # first row actually reported
+                surp = df.loc[idx].get("Surprise(%)")
+                return float(surp) if (surp is not None and surp == surp) else None
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Metrics from the quarterly series
 # ---------------------------------------------------------------------------
