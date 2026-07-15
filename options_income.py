@@ -287,3 +287,81 @@ def fetch_wheel_candidates(symbol: str, spot: Optional[float]) -> list[dict]:
             })
     rows.sort(key=lambda r: r["cycle_return"], reverse=True)
     return rows[:4]
+
+
+# ---------------------------------------------------------------------------
+# Put credit spreads — defined-risk premium selling (works on XSP/SPX too)
+# ---------------------------------------------------------------------------
+SPREAD_DTE_MIN, SPREAD_DTE_MAX = 20, 50
+SPREAD_DELTA_LO, SPREAD_DELTA_HI = -0.37, -0.20   # short leg around 30-20 delta
+SPREAD_MAX_WIDTH_PCT = 0.10                       # long leg within 10% of spot below
+MIN_CREDIT = 0.05
+
+
+def fetch_put_spread_candidates(symbol: str, spot: Optional[float]) -> list[dict]:
+    """PUT CREDIT SPREADS: sell a ~20-35Δ put, buy a further-OTM put in the same
+    expiry. Max loss = width − credit, known up front — the defined-risk version
+    of the cash-secured put. Credit is conservative: short leg at the BID, long
+    leg at the ASK. Ranked by return on risk (credit ÷ max loss)."""
+    if not HAVE_YF or not spot or spot <= 0:
+        return []
+    try:
+        tk = yf.Ticker(symbol)
+    except Exception:  # noqa: BLE001
+        return []
+    rows: list[dict] = []
+    for expiry, dte in _expiries_between(tk, SPREAD_DTE_MIN, SPREAD_DTE_MAX, 3)[:2]:
+        try:
+            puts = tk.option_chain(expiry).puts
+        except Exception as e:  # noqa: BLE001
+            logger.warning("%s %s: spread chain failed: %s", symbol, expiry, str(e)[:100])
+            continue
+        if puts is None or getattr(puts, "empty", True):
+            continue
+        legs = {}
+        for _, r in puts.iterrows():
+            k = _f(r.get("strike"))
+            if k is None:
+                continue
+            legs[k] = {"bid": _f(r.get("bid")) or 0.0, "ask": _f(r.get("ask")) or 0.0,
+                       "last": _f(r.get("lastPrice")) or 0.0,
+                       "iv": _f(r.get("impliedVolatility")),
+                       "oi": int(_f(r.get("openInterest")) or 0)}
+        strikes = sorted(legs)
+        for k_short in strikes:
+            if k_short > spot:
+                continue
+            leg_s = legs[k_short]
+            delta = put_delta(spot, k_short, leg_s["iv"], dte)
+            if delta is None or not (SPREAD_DELTA_LO <= delta <= SPREAD_DELTA_HI):
+                continue
+            short_prem = leg_s["bid"] if leg_s["bid"] > 0 else leg_s["last"]
+            if short_prem < MIN_CREDIT:
+                continue
+            lowers = [k for k in strikes
+                      if k < k_short and (k_short - k) <= SPREAD_MAX_WIDTH_PCT * spot]
+            for k_long in sorted(lowers, reverse=True)[:3]:   # nearest 3 widths
+                leg_l = legs[k_long]
+                long_prem = leg_l["ask"] if leg_l["ask"] > 0 else leg_l["last"]
+                credit = short_prem - long_prem
+                width = k_short - k_long
+                max_loss = width - credit
+                if credit < MIN_CREDIT or max_loss <= 0:
+                    continue
+                rows.append({
+                    "symbol": symbol, "spot": spot,
+                    "short_strike": k_short, "long_strike": k_long, "width": width,
+                    "delta": delta, "expiry": expiry, "dte": dte,
+                    "credit": credit,
+                    "max_loss": max_loss,
+                    "ror": credit / max_loss,                      # return on risk
+                    "annualized": (credit / max_loss) * 365.0 / max(dte, 1),
+                    "breakeven": k_short - credit,
+                    "cushion": (spot - (k_short - credit)) / spot,
+                    "pop": 1.0 + delta,                            # ≈ P(short leg expires OTM)
+                    "iv": leg_s["iv"],
+                    "oi": min(leg_s["oi"], leg_l["oi"]),
+                    "bp_needed": max_loss * 100.0,                 # buying power per spread
+                })
+    rows.sort(key=lambda r: r["ror"], reverse=True)
+    return rows[:PER_TICKER_ROWS]

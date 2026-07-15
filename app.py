@@ -70,7 +70,8 @@ from tenx_radar import (fetch_quarterly_yahoo, compute_tenx_metrics, tenx_score,
 from entry_meter import fetch_entry_history_yahoo, compute_entry_meter
 from insider import fetch_insider, insider_display
 from options_income import (fetch_put_candidates, fetch_call_candidates,
-                            fetch_leaps_candidates, fetch_wheel_candidates)
+                            fetch_leaps_candidates, fetch_wheel_candidates,
+                            fetch_put_spread_candidates)
 import market_risk
 
 _seen = {item["ticker"] for item in _BASE_WATCHLIST}
@@ -547,7 +548,13 @@ def fmt_earnings(iso: Optional[str]) -> str:
 
 
 _OPT_FETCHERS = {"csp": fetch_put_candidates, "cc": fetch_call_candidates,
-                 "leaps": fetch_leaps_candidates, "wheel": fetch_wheel_candidates}
+                 "leaps": fetch_leaps_candidates, "wheel": fetch_wheel_candidates,
+                 "pcs": fetch_put_spread_candidates}
+
+# Index underlyings for defined-risk spreads: §1256 contracts — mark-to-market,
+# NO wash-sale rules, 60/40 tax treatment, cash-settled (no assignment).
+INDEX_UNDERLYINGS = {"^XSP": "XSP — Mini-SPX (1/10th S&P 500)",
+                     "^SPX": "SPX — S&P 500 index"}
 
 
 def fetch_surprises(symbols):
@@ -1569,8 +1576,9 @@ elif nav == NAV_PUTS:
         OPT_CC = "🏠 Covered calls"
         OPT_LEAPS = "🚀 LEAPS calls"
         OPT_WHEEL = "🎡 Wheel screen"
-        strategy = st.radio("strategy", [OPT_CSP, OPT_CC, OPT_LEAPS, OPT_WHEEL], horizontal=True,
-                            key="opt_strategy", label_visibility="collapsed")
+        OPT_PCS = "📐 Put credit spreads"
+        strategy = st.radio("strategy", [OPT_CSP, OPT_CC, OPT_LEAPS, OPT_WHEEL, OPT_PCS],
+                            horizontal=True, key="opt_strategy", label_visibility="collapsed")
         us_df = df[(df["Region"] == "US") & df["Price"].notna()]
         today_iso = datetime.now().date().isoformat()
 
@@ -1919,7 +1927,7 @@ be genuinely fine watching go to zero. Not advice.
         # ------------------------------------------------------------------
         # 🎡 Wheel screen — the spreadsheet criteria, automated
         # ------------------------------------------------------------------
-        else:
+        elif strategy == OPT_WHEEL:
             st.markdown(
                 "**Your wheel-sheet criteria, automated.** ✅ requires all three: **uptrend** (price "
                 "above its 200-day average AND positive 12-1-month momentum), **sane valuation** "
@@ -2059,6 +2067,164 @@ negative/missing P/E passes only with net cash (💰); P/E ≥ 100 passes only w
 falling names and the "income" becomes an unrealized loss you then write calls against below cost.
 The trend test is the guard — respect it when it flips ❌ mid-position. Delta here is computed from
 delayed IV, so treat the Δ column as approximate and confirm greeks in your broker. Not advice.
+"""
+                )
+
+        # ------------------------------------------------------------------
+        # 📐 Put credit spreads — defined max loss; XSP/SPX = no wash sales
+        # ------------------------------------------------------------------
+        else:
+            st.markdown(
+                "**The defined-risk version of selling puts**: sell a ~20-35Δ put, buy a cheaper put "
+                "below it in the same expiry. Worst case is known up front (**Max loss** = width − "
+                "credit) — no assignment surprise, far less buying power. On **XSP/SPX** the contracts "
+                "are **§1256**: cash-settled, 60/40 tax treatment, and **wash-sale rules don't apply** "
+                "— the structural fix for trading income without ticker-rotation bookkeeping."
+            )
+            idx_price = mkt.get("index_price")
+            idx_spots = {"^XSP": idx_price / 10.0 if idx_price else None,
+                         "^SPX": idx_price}
+            green_df = us_df[us_df["52w Pos %"].notna() & (us_df["52w Pos %"] <= 40)] \
+                .sort_values("52w Pos %")
+            sc1, sc2 = st.columns([3, 1.6])
+            with sc1:
+                picked_s = st.multiselect(
+                    "Underlyings (indexes first — §1256, no wash sales — then your green-zone names)",
+                    options=list(INDEX_UNDERLYINGS) + sorted(us_df["Ticker"]),
+                    default=["^XSP"] + list(green_df["Ticker"].head(4)),
+                    max_selections=PUTS_MAX_TICKERS,
+                    format_func=lambda s: INDEX_UNDERLYINGS.get(s, s),
+                    help="^XSP is 1/10th the S&P 500 — spread widths ~$100-500 of risk, "
+                         "right-sized for smaller accounts. ^SPX is the full-size version.")
+            with sc2:
+                min_ror = st.slider(
+                    "Min return on risk %", 5, 50, 15,
+                    help="Credit ÷ max loss. 15% ≈ risking $85 to make $15 per $1-wide spread — "
+                         "higher demands better pay but closer strikes.")
+            if not picked_s:
+                st.info("Pick at least one underlying — ^XSP is the wash-sale-free default.")
+            else:
+                spots = {}
+                for s_ in picked_s:
+                    if s_ in idx_spots:
+                        if idx_spots[s_]:
+                            spots[s_] = idx_spots[s_]
+                    else:
+                        p_ = (quotes.get(s_) or {}).get("price")
+                        if p_:
+                            spots[s_] = p_
+                if len(spots) < len(picked_s):
+                    missing_ = [s for s in picked_s if s not in spots]
+                    st.caption("No spot price yet for: " + ", ".join(missing_) +
+                               (" — index levels come from the market-context quote; refresh prices "
+                                "if it's blank." if any(s in idx_spots for s in missing_) else ""))
+                with st.spinner(f"Building spreads for {len(spots)} underlyings (20-50 days out)…"):
+                    by_sym = fetch_options_all(spots, "pcs")
+                    earn_s = fetch_earnings_dates([s for s in spots if s not in idx_spots])
+                sp_rows = []
+                for s_, rows_ in by_sym.items():
+                    is_idx = s_ in idx_spots
+                    m_ = us_df[us_df["Ticker"] == s_]
+                    pos_ = (mkt.get("index_52w_pos") if is_idx
+                            else (m_["52w Pos %"].iloc[0] if len(m_) else None))
+                    for r_ in (rows_ or []):
+                        ed = earn_s.get(s_)
+                        sp_rows.append({
+                            "Ticker": s_, "52w Pos %": pos_,
+                            "Spot": r_["spot"], "Short K": r_["short_strike"],
+                            "Long K": r_["long_strike"], "Width": r_["width"],
+                            "Δ short": r_["delta"], "Expiry": r_["expiry"], "DTE": r_["dte"],
+                            "Credit": r_["credit"], "Max loss": r_["max_loss"],
+                            "RoR %": r_["ror"] * 100, "Annualized %": r_["annualized"] * 100,
+                            "POP ≈ %": r_["pop"] * 100,
+                            "Breakeven": r_["breakeven"], "Cushion %": r_["cushion"] * 100,
+                            "IV %": r_["iv"] * 100 if r_["iv"] is not None else None,
+                            "OI (min)": r_["oi"], "BP / spread": r_["bp_needed"],
+                            "Tax": "🛡️ §1256 — no wash sale" if is_idx else "equity",
+                            "Earnings": (f"⚠️ {ed}" if (not is_idx and ed
+                                                        and today_iso <= ed <= r_["expiry"]) else "—"),
+                        })
+                sdf_ = pd.DataFrame(sp_rows)
+                if sdf_.empty:
+                    st.info("No spreads found — index chains can come back empty outside US market "
+                            "hours, and thin names may lack usable quotes. Try during the trading day.")
+                else:
+                    sdf_ = sdf_[sdf_["RoR %"] >= float(min_ror)] \
+                        .sort_values("RoR %", ascending=False).head(40)
+                    if sdf_.empty:
+                        st.info(f"Nothing pays {min_ror}%+ on risk in the ~20-35Δ band — premiums are "
+                                f"thin (typical when the entry meter reads greed/calm). Lower the bar "
+                                f"or wait for volatility.")
+                    else:
+                        sp_display = pd.DataFrame({
+                            "Ticker": sdf_["Ticker"], "52w": sdf_["52w Pos %"],
+                            "Spot": sdf_["Spot"], "Short K": sdf_["Short K"],
+                            "Long K": sdf_["Long K"], "Width": sdf_["Width"],
+                            "Δ": sdf_["Δ short"], "Expiry": sdf_["Expiry"], "DTE": sdf_["DTE"],
+                            "Credit": sdf_["Credit"], "Max loss": sdf_["Max loss"],
+                            "RoR": sdf_["RoR %"], "Ann.": sdf_["Annualized %"],
+                            "POP≈": sdf_["POP ≈ %"], "Breakeven": sdf_["Breakeven"],
+                            "Cushion": sdf_["Cushion %"], "IV": sdf_["IV %"],
+                            "OI": sdf_["OI (min)"], "BP/spread": sdf_["BP / spread"],
+                            "Tax": sdf_["Tax"], "Earnings": sdf_["Earnings"],
+                        })
+                        sstyler = (sp_display.style
+                                   .map(color_signed, subset=["RoR", "Cushion"])
+                                   .apply(row_bg_styler(sdf_["52w Pos %"]), axis=1))
+                        st.dataframe(
+                            sstyler, width="stretch", hide_index=True,
+                            height=(len(sp_display) + 1) * 36 + 3,
+                            column_config={
+                                "52w": ncol("%.0f%%"), "Spot": ncol("$%.2f"),
+                                "Short K": ncol("$%.0f"), "Long K": ncol("$%.0f"),
+                                "Width": ncol("$%.0f"),
+                                "Δ": ncol("%.2f", "Short-leg Black-Scholes delta from chain IV."),
+                                "DTE": ncol("%dd"), "Credit": ncol("$%.2f"),
+                                "Max loss": ncol("$%.2f", "Per share; ×100 per spread. Known up front."),
+                                "RoR": ncol("%.0f%%", "Credit ÷ max loss for the cycle."),
+                                "Ann.": ncol("%.0f%%"),
+                                "POP≈": ncol("%.0f%%", "≈ probability the short strike expires OTM "
+                                                       "(1 − |Δ|). Approximation, not a promise."),
+                                "Breakeven": ncol("$%.2f"), "Cushion": ncol("%.1f%%"),
+                                "IV": ncol("%.0f%%"),
+                                "OI": st.column_config.NumberColumn(format="localized"),
+                                "BP/spread": st.column_config.NumberColumn(format="dollar"),
+                            },
+                        )
+                        st.caption("Sorted by return on risk · **Credit** = short bid − long ask "
+                                   "(conservative; live mid is usually better) · **POP≈** and **Δ** "
+                                   "derive from delayed IV · 🛡️ index rows are §1256 contracts — "
+                                   "cash-settled, no wash-sale rules, 60/40 tax (confirm with a tax "
+                                   "professional).")
+                        st.download_button("📥 Download spread candidates as CSV",
+                                           data=sdf_.to_csv(index=False).encode(),
+                                           file_name=f"pcs_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                                           mime="text/csv")
+            with st.expander("ℹ️ Put credit spreads — mechanics & risks, plainly"):
+                st.markdown(
+                    """
+**The trade.** Sell a put around 20-35Δ, buy a put 1-10% further down, same expiry. You collect the
+**Credit**; your worst case is **Max loss** (width − credit) no matter what the stock does — that's
+the entire point versus a cash-secured put. Buying power needed is the max loss, not the full strike,
+so returns *on capital at risk* look high (**RoR**); remember the flip side — you lose that capital
+fully if the underlying finishes below the long strike.
+
+**Why XSP/SPX here.** Index options are **§1256 contracts**: marked-to-market at year-end, gains
+taxed 60% long-term / 40% short-term regardless of holding period, **and wash-sale rules do not
+apply** — you can trade XSP spreads every week without the rotation bookkeeping single names need.
+They're also cash-settled European options: no early assignment, no surprise shares, no single-stock
+earnings gaps. XSP is 1/10th of SPX, so a $5-wide XSP spread risks ≈$400-480 — sized for regular
+accounts. (Tax treatment is *not* advice — confirm §1256 handling with your tax professional.)
+
+**The honest math for your 2-3%/month goal.** A 30Δ spread wins often but loses ~5-6× the credit
+when it loses. At 15% RoR you need to win ~87% of the time just to break even before costs — right
+around what 30Δ delivers. The realistic edge comes from selling when IV is elevated (fear) and
+sizing so one full loss costs ≤2-3% of the account: that's how "income" survives the losing month.
+Spreads near **⚠️ earnings** or after the entry meter flips to fear pay more for a reason.
+
+**Execution notes.** Enter as a single spread order at the mid, never two separate legs. Thin OI on
+either leg (see **OI**) means wide fills — indexes are the most liquid thing listed. Quotes here are
+~15-min delayed. Not advice.
 """
                 )
         st.divider()

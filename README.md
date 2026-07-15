@@ -36,6 +36,12 @@ Open the deployed URL in your browser each morning — fresh prices on every pag
   🟣 3+ buys, zero sells, near the 52-week low). Own FMP budget (`INSIDER_BUDGET`, default 8/load,
   cached 14d); if your FMP plan doesn't include insider data the column stays blank without wasting
   quota. Display-only — never moves the Score.
+- **💰 Options tab** (`options_income.py`) — five screens on free Yahoo chains (delayed; analytics,
+  not advice): cash-secured puts on green-zone names, covered calls on red-zone holdings, LEAPS on
+  10x-radar leaders, a 🎡 Wheel screen (uptrend + P/E + ~30Δ/30DTE premium bar + missed-quarter
+  highlight), and 📐 put credit spreads with defined max loss — including **XSP/SPX** index spreads
+  (§1256: cash-settled, no wash-sale rules; confirm tax treatment professionally). Black-Scholes
+  deltas computed from chain IV; conservative bid/ask pricing; per-strategy risk expanders.
 - **Daily digest** (`digest.py` + `.github/workflows/daily-digest.yml`) — weekday GitHub Action
   (13:30 UTC) that posts the entry-meter reading + 10x Radar top 10 to Telegram. Setup: repo
   **Settings → Secrets and variables → Actions** → add `FMP_API_KEY`, `TELEGRAM_BOT_TOKEN` (from
