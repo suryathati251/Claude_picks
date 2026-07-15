@@ -796,24 +796,34 @@ else:
 
 df = build_dataframe(quotes, fundamentals, fam_scores)
 
-def color_score(val):
-    if val == "—": return "color: #6b7280;"
+def color_score(v):
+    """Text color for 0-100 score cells. Cells stay NUMERIC (so header-click
+    sorting works); pretty formatting happens via st.column_config."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "color: #6b7280;"
     try:
-        nv = float(val)
-    except ValueError:
+        nv = float(v)
+    except (TypeError, ValueError):
         return ""
     if nv >= 70: return "color: #047857; font-weight: 600;"
     if nv >= 45: return "color: #0369a1;"
     return "color: #6b7280;"
 
 
-def color_signed(val):
-    if val == "—": return "color: #6b7280;"
+def color_signed(v):
+    """Green/red text for signed numeric cells (numeric so sorting works)."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "color: #6b7280;"
     try:
-        nv = float(val.replace("%", "").replace("+", "").replace("pt", ""))
-    except ValueError:
+        nv = float(v)
+    except (TypeError, ValueError):
         return ""
     return "color: #059669;" if nv >= 0 else "color: #dc2626;"
+
+
+def ncol(fmt, help_=None):
+    """Shorthand: numeric column with printf formatting (keeps sorting numeric)."""
+    return st.column_config.NumberColumn(format=fmt, help=help_)
 
 
 def pos_row_bg(pos):
@@ -825,11 +835,17 @@ def pos_row_bg(pos):
         return ""
     if pos <= 30:
         alpha = 0.15 + (30.0 - pos) / 30.0 * 0.40      # 0% -> 0.55 · 30% -> 0.15
-        return f"background-color: rgba(16, 185, 129, {alpha:.2f});"
-    if pos >= 70:
+        css = f"background-color: rgba(16, 185, 129, {alpha:.2f});"
+    elif pos >= 70:
         alpha = 0.12 + (pos - 70.0) / 30.0 * 0.33      # 70% -> 0.12 · 100% -> 0.45
-        return f"background-color: rgba(239, 68, 68, {alpha:.2f});"
-    return ""
+        css = f"background-color: rgba(239, 68, 68, {alpha:.2f});"
+    else:
+        return ""
+    # On the darkest rows, force white text so cell values stay readable even
+    # over their own semantic colors (applied last, so it wins the cascade).
+    if alpha >= 0.40:
+        css += " color: #ffffff; font-weight: 600;"
+    return css
 
 
 def row_bg_styler(pos_series):
@@ -918,10 +934,6 @@ if nav == NAV_WATCH:
     m4.metric("Top", f"{top_name} {top_score:.0f}")
     st.divider()
 
-    def _i(v):  # 0–100 integer or em-dash
-        return f"{v:.0f}" if pd.notna(v) else "—"
-
-
     # Insider signal (small separate FMP budget, cached 14d, watchlist only).
     insider_data, insider_unsupported = fetch_insider_all(api_key, SYMBOLS, INSIDER_BUDGET)
     if insider_unsupported:
@@ -930,6 +942,9 @@ if nav == NAV_WATCH:
 
 
     def render_display(row):
+        """Display row: NUMERIC cells stay numeric (header-click sorting works);
+        formatting is applied by st.column_config below. Text only where a cell
+        is inherently text (currency symbols, flags, ratios with sentinels)."""
         target_str = fmt_price(row["Target"], row["Currency"]) if pd.notna(row["Target"]) else "—"
         if pd.notna(row["Target"]) and not row["Target OK"]:
             target_str += " ⚠️"
@@ -937,54 +952,66 @@ if nav == NAV_WATCH:
             "Ticker": f"{row['Ticker']}  ({row['Region']})",
             "Name": row["Name"],
             "Sector": row["Sector"],
-            "Score": _i(row["Score"]),
+            "Score": row["Score"],
             "Cov": f"{int(row['Cov'])}/{int(row['CovN'])}" if pd.notna(row["Cov"]) else "—",
-            "V": _i(row["V"]), "Q": _i(row["Q"]), "G": _i(row["G"]), "M": _i(row["M"]), "S": _i(row["S"]),
-            "Moat": _i(row["Moat"]),
+            "V": row["V"], "Q": row["Q"], "G": row["G"], "M": row["M"], "S": row["S"],
+            "Moat": row["Moat"],
             "Price": fmt_price(row["Price"], row["Currency"]),
-            "Day %": f"{row['Day %']:+.2f}%" if pd.notna(row["Day %"]) else "—",
-            "Earn Yld": f"{row['Earnings Yld %']:.1f}%" if pd.notna(row["Earnings Yld %"]) else "—",
-            "ROIC": f"{row['ROIC %']:.1f}%" if pd.notna(row["ROIC %"]) else "—",
-            "Rev Grw": f"{row['Rev Growth %']:+.1f}%" if pd.notna(row["Rev Growth %"]) else "—",
-            "Gross Mgn": f"{row['Gross Mgn %']:.0f}%" if pd.notna(row["Gross Mgn %"]) else "—",
-            "FCF Yld": f"{row['FCF Yld %']:.1f}%" if pd.notna(row["FCF Yld %"]) else "—",
-            "P/S": f"{row['P/S']:.1f}" if pd.notna(row["P/S"]) else "—",
-            "PEG": f"{row['PEG']:.2f}" if pd.notna(row["PEG"]) else "—",
-            "EV/EBIT": ("n/m" if (pd.notna(row["EV/EBIT"]) and row["EV/EBIT"] >= 999)
-                        else (f"{row['EV/EBIT']:.1f}" if pd.notna(row["EV/EBIT"]) else "—")),
-            "D/E": f"{row['D/E']:.2f}" if pd.notna(row["D/E"]) else "—",
+            "Day %": row["Day %"],
+            "Earn Yld": row["Earnings Yld %"],
+            "ROIC": row["ROIC %"],
+            "Rev Grw": row["Rev Growth %"],
+            "Gross Mgn": row["Gross Mgn %"],
+            "FCF Yld": row["FCF Yld %"],
+            "P/S": row["P/S"],
+            "PEG": row["PEG"],
+            "EV/EBIT": (None if (pd.notna(row["EV/EBIT"]) and row["EV/EBIT"] >= 999)
+                        else row["EV/EBIT"]),
+            "D/E": row["D/E"],
             "Flags": row["Flags"] if row["Flags"] else "—",
             "Insider": insider_display(insider_data.get(row["Ticker"]), row["52w Pos %"]),
-            "12-1m": f"{row['Mom 12-1 %']:+.0f}%" if pd.notna(row["Mom 12-1 %"]) else "—",
-            "52w": f"{row['52w Pos %']:.0f}%" if pd.notna(row["52w Pos %"]) else "—",
-            "Mkt Cap": fmt_mcap(row["Mkt Cap"], row["Currency"]),
+            "12-1m": row["Mom 12-1 %"],
+            "52w": row["52w Pos %"],
+            "Mkt Cap": row["Mkt Cap"],
             "Target": target_str,
-            "Upside %": f"{row['Upside %']:+.1f}%" if pd.notna(row["Upside %"]) else "—",
+            "Upside %": row["Upside %"],
             "Thesis": row["Thesis"],
         })
 
 
     display = view.apply(render_display, axis=1)
 
-
     styler = display.style
-    # Row shading: green near the 52-week low (darker = closer — buy-fear zone),
-    # red near the 52-week high (darker = closer).
-    styler = styler.apply(row_bg_styler(view["52w Pos %"]), axis=1)
     for c in ["Score", "V", "Q", "G", "M", "S", "Moat"]:
         styler = styler.map(color_score, subset=[c])
     styler = (styler.map(color_signed, subset=["Day %"])
                     .map(color_signed, subset=["Rev Grw"])
                     .map(color_signed, subset=["12-1m"]))
+    # Row shading LAST so the white-text override wins on the darkest rows.
+    styler = styler.apply(row_bg_styler(view["52w Pos %"]), axis=1)
 
     st.dataframe(
         styler, width="stretch", hide_index=True,
         # Render at full height so ALL rows show and the whole PAGE scrolls, instead
         # of trapping the rows inside a fixed-height box with its own scrollbar.
         height=(len(display) + 1) * 36 + 3,
-        column_config={"Thesis": st.column_config.TextColumn(width="large"),
-                       "Flags": st.column_config.TextColumn(width="medium"),
-                       "Name": st.column_config.TextColumn(width="medium")},
+        column_config={
+            "Thesis": st.column_config.TextColumn(width="large"),
+            "Flags": st.column_config.TextColumn(width="medium"),
+            "Name": st.column_config.TextColumn(width="medium"),
+            "Score": ncol("%.0f"), "V": ncol("%.0f"), "Q": ncol("%.0f"), "G": ncol("%.0f"),
+            "M": ncol("%.0f"), "S": ncol("%.0f"), "Moat": ncol("%.0f"),
+            "Day %": ncol("%+.2f%%"),
+            "Earn Yld": ncol("%.1f%%"), "ROIC": ncol("%.1f%%"), "Rev Grw": ncol("%+.1f%%"),
+            "Gross Mgn": ncol("%.0f%%"), "FCF Yld": ncol("%.1f%%"),
+            "P/S": ncol("%.1f"), "PEG": ncol("%.2f"),
+            "EV/EBIT": ncol("%.1f", "Blank when EBIT ≤ 0 (not meaningful)."),
+            "D/E": ncol("%.2f"),
+            "12-1m": ncol("%+.0f%%"), "52w": ncol("%.0f%%"),
+            "Mkt Cap": st.column_config.NumberColumn(
+                format="compact", help="Native currency for non-US listings."),
+            "Upside %": ncol("%+.1f%%"),
+        },
     )
     st.caption("**Row shading:** 🟩 green = in the bottom 30% of its 52-week range (darker = closer "
                "to the 52w low — the buy-fear zone) · 🟥 red = top 30% of the range (darker = closer "
@@ -1179,35 +1206,37 @@ elif nav == NAV_RADAR:
                     # load, then cached 3 days); beyond that the column shows —.
                     earn_dates = fetch_earnings_dates(list(shown_tenx["Sym"])[:100])
 
-                def _tenx_disp(row):
-                    return pd.Series({
-                        "Ticker": row["Ticker"], "Name": row["Name"], "Sector": row["Sector"],
-                        "10x": f"{row['10x']:.0f}",
-                        "Δ": (f"{row['10x Δ']:+.0f}" if pd.notna(row.get("10x Δ")) else "—"),
-                        "Rev YoY (Q)": f"{row['Rev YoY (Q) %']:+.0f}%",
-                        "Accel": f"{row['Accel ppt']:+.0f}pt" if pd.notna(row["Accel ppt"]) else "—",
-                        "QoQ": f"{row['QoQ %']:+.1f}%" if pd.notna(row["QoQ %"]) else "—",
-                        "GM Δ": f"{row['GM Δ ppt']:+.1f}pt" if pd.notna(row["GM Δ ppt"]) else "—",
-                        "OM Δ": f"{row['OM Δ ppt']:+.1f}pt" if pd.notna(row["OM Δ ppt"]) else "—",
-                        "12-1m": f"{row['12-1m %']:+.0f}%" if pd.notna(row["12-1m %"]) else "—",
-                        "52w": f"{row['52w Pos %']:.0f}%" if pd.notna(row["52w Pos %"]) else "—",
-                        "P/S": f"{row['P/S']:.1f}" if pd.notna(row["P/S"]) else "—",
-                        "Mkt Cap": fmt_mcap(row["Mkt Cap"]),
-                        "Earnings": fmt_earnings(earn_dates.get(row["Sym"])),
-                        "Latest Q": row["Latest Q"],
-                        "Signals": row["Signals"],
-                    })
-                tenx_display = shown_tenx.apply(_tenx_disp, axis=1)
+                # Numeric columns (formatting via column_config) so header-click
+                # sorting is numeric, not alphabetical.
+                tenx_display = pd.DataFrame({
+                    "Ticker": shown_tenx["Ticker"], "Name": shown_tenx["Name"],
+                    "Sector": shown_tenx["Sector"],
+                    "10x": shown_tenx["10x"], "Δ": shown_tenx["10x Δ"],
+                    "Rev YoY (Q)": shown_tenx["Rev YoY (Q) %"],
+                    "Accel": shown_tenx["Accel ppt"], "QoQ": shown_tenx["QoQ %"],
+                    "GM Δ": shown_tenx["GM Δ ppt"], "OM Δ": shown_tenx["OM Δ ppt"],
+                    "12-1m": shown_tenx["12-1m %"], "52w": shown_tenx["52w Pos %"],
+                    "P/S": shown_tenx["P/S"], "Mkt Cap": shown_tenx["Mkt Cap"],
+                    "Earnings": shown_tenx["Sym"].map(lambda s: fmt_earnings(earn_dates.get(s))),
+                    "Latest Q": shown_tenx["Latest Q"], "Signals": shown_tenx["Signals"],
+                })
                 tstyler = (tenx_display.style
-                           .apply(row_bg_styler(shown_tenx["52w Pos %"]), axis=1)
                            .map(color_score, subset=["10x"])
                            .map(color_signed, subset=["Δ", "Rev YoY (Q)", "Accel", "QoQ",
-                                                      "GM Δ", "OM Δ", "12-1m"]))
+                                                      "GM Δ", "OM Δ", "12-1m"])
+                           .apply(row_bg_styler(shown_tenx["52w Pos %"]), axis=1))
                 st.dataframe(
                     tstyler, width="stretch", hide_index=True,
                     height=(len(tenx_display) + 1) * 36 + 3,
-                    column_config={"Signals": st.column_config.TextColumn(width="large"),
-                                   "Name": st.column_config.TextColumn(width="medium")},
+                    column_config={
+                        "Signals": st.column_config.TextColumn(width="large"),
+                        "Name": st.column_config.TextColumn(width="medium"),
+                        "10x": ncol("%.0f"), "Δ": ncol("%+.0f"),
+                        "Rev YoY (Q)": ncol("%+.0f%%"), "Accel": ncol("%+.0fpt"),
+                        "QoQ": ncol("%+.1f%%"), "GM Δ": ncol("%+.1fpt"), "OM Δ": ncol("%+.1fpt"),
+                        "12-1m": ncol("%+.0f%%"), "52w": ncol("%.0f%%"), "P/S": ncol("%.1f"),
+                        "Mkt Cap": st.column_config.NumberColumn(format="compact"),
+                    },
                 )
                 st.caption("**Row shading:** 🟩 green = bottom 30% of the 52-week range (darker = closer to "
                            "the 52w low — exploding revenue AND a beaten-down price is the radar's dream setup) · "
@@ -1568,30 +1597,32 @@ elif nav == NAV_PUTS:
                     st.info(f"Nothing clears a {min_cushion}% cushion — lower the slider, or accept "
                             f"that premiums are thin right now (often true when fear is low).")
                 else:
-                    def _put_disp(row):
-                        return pd.Series({
-                            "Ticker": row["Ticker"],
-                            "52w": f"{row['52w Pos %']:.0f}%" if pd.notna(row["52w Pos %"]) else "—",
-                            "Spot": fmt_price(row["Spot"]),
-                            "Strike": f"{fmt_price(row['Strike'])} ({row['OTM %']:.0f}% below)",
-                            "Expiry": f"{row['Expiry']} · {int(row['DTE'])}d",
-                            "Premium": f"{fmt_price(row['Premium'])} ({row['Src']})",
-                            "Yield": f"{row['Yield %']:.1f}%",
-                            "Annualized": f"{row['Annualized %']:.0f}%",
-                            "Breakeven": fmt_price(row["Breakeven"]),
-                            "Cushion": f"{row['Cushion %']:.1f}%",
-                            "IV": f"{row['IV %']:.0f}%" if pd.notna(row["IV %"]) else "—",
-                            "OI": f"{int(row['OI']):,}",
-                            "Cash/contract": fmt_mcap(row["Cash needed"]),
-                            "Earnings": row["Earnings pre-expiry"],
-                        })
-                    put_display = pdf_.apply(_put_disp, axis=1)
+                    put_display = pd.DataFrame({
+                        "Ticker": pdf_["Ticker"], "52w": pdf_["52w Pos %"],
+                        "Spot": pdf_["Spot"], "Strike": pdf_["Strike"],
+                        "OTM": pdf_["OTM %"], "Expiry": pdf_["Expiry"], "DTE": pdf_["DTE"],
+                        "Premium": pdf_["Premium"], "Src": pdf_["Src"],
+                        "Yield": pdf_["Yield %"], "Annualized": pdf_["Annualized %"],
+                        "Breakeven": pdf_["Breakeven"], "Cushion": pdf_["Cushion %"],
+                        "IV": pdf_["IV %"], "OI": pdf_["OI"],
+                        "Cash/contract": pdf_["Cash needed"],
+                        "Earnings": pdf_["Earnings pre-expiry"],
+                    })
                     pstyler = (put_display.style
-                               .apply(row_bg_styler(pdf_["52w Pos %"]), axis=1)
-                               .map(color_signed, subset=["Cushion", "Yield"]))
+                               .map(color_signed, subset=["Cushion", "Yield"])
+                               .apply(row_bg_styler(pdf_["52w Pos %"]), axis=1))
                     st.dataframe(
                         pstyler, width="stretch", hide_index=True,
                         height=(len(put_display) + 1) * 36 + 3,
+                        column_config={
+                            "52w": ncol("%.0f%%"), "Spot": ncol("$%.2f"),
+                            "Strike": ncol("$%.2f"), "OTM": ncol("%.0f%% below"),
+                            "DTE": ncol("%dd"), "Premium": ncol("$%.2f"),
+                            "Yield": ncol("%.1f%%"), "Annualized": ncol("%.0f%%"),
+                            "Breakeven": ncol("$%.2f"), "Cushion": ncol("%.1f%%"),
+                            "IV": ncol("%.0f%%"), "OI": st.column_config.NumberColumn(format="localized"),
+                            "Cash/contract": st.column_config.NumberColumn(format="dollar"),
+                        },
                     )
                     st.caption("Sorted by annualized premium yield · row shading = the stock's "
                                "52-week position (green = near the low) · **Premium** uses the bid "
