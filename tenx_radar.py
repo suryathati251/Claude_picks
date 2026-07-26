@@ -247,18 +247,30 @@ def _headroom_from_mcap(mcap: Optional[float]) -> Optional[float]:
 
 def tenx_score(m: dict, market_cap: Optional[float],
                mom_12_1: Optional[float] = None,
-               mom_52w: Optional[float] = None) -> tuple[Optional[float], dict, list[str]]:
+               mom_52w: Optional[float] = None,
+               ps: Optional[float] = None,
+               value_aware: bool = False) -> tuple[Optional[float], dict, list[str]]:
     """(score 0-100 | None, component subscores 0..1, tag strings).
 
     Components are ABSOLUTE (not peer-percentile): "exploding" means exploding,
     not "growing faster than a utility". Returns None when the core signal
     (latest-quarter YoY revenue growth) is unavailable.
+
+    value_aware=True adds a sixth component (weight 0.20): the sales multiple
+    RELATIVE TO GROWTH — psg = P/S ÷ YoY growth% (a sales-PEG). NBIS at 64x
+    sales growing 684% has psg 0.09 (cheap per growth); a 24x-sales name
+    growing 68% has psg 0.35; 30x growing 30% has psg 1.0 (priced for
+    perfection). Off by default because many historical 10x-baggers looked
+    'expensive' the whole way up — but the market can also already have paid
+    itself the move, which is what this component measures.
     """
     yoy = m.get("q_rev_yoy")
     if yoy is None:
         return None, {}, []
 
     sub: dict[str, Optional[float]] = {}
+
+    psg = (ps / (yoy * 100.0)) if (ps and ps > 0 and yoy > 0) else None
 
     # 1) Explosion — 0% YoY -> 0, 100%+ YoY -> 1.0 (linear between).
     sub["explosion"] = _clip01(yoy / 1.00)
@@ -291,9 +303,17 @@ def tenx_score(m: dict, market_cap: Optional[float],
     else:
         sub["momentum"] = None
 
+    weights = dict(TENX_WEIGHTS)
+    if value_aware:
+        # psg ≤0.10 -> 1.0 (MU-in-upcycle cheap) · 0.325 -> 0.5 · ≥0.55 -> 0.
+        # Calibration: 24x sales growing 68% (psg 0.35) lands ~0.44 — a drag,
+        # as it should be; 64x growing 684% (psg 0.09) still scores full.
+        sub["valuation"] = _clip01((0.55 - psg) / 0.45) if psg is not None else None
+        weights["valuation"] = 0.20
+
     num = den = 0.0
     present = 0
-    for k, w in TENX_WEIGHTS.items():
+    for k, w in weights.items():
         v = sub.get(k)
         if v is not None:
             num += w * v
@@ -302,8 +322,8 @@ def tenx_score(m: dict, market_cap: Optional[float],
     raw = num / den if den > 0 else None
     if raw is None:
         return None, sub, []
-    # Shrink toward neutral for missing components (can't fluke a 100 on 2 of 5).
-    cov = present / len(TENX_WEIGHTS)
+    # Shrink toward neutral for missing components (can't fluke a 100 on thin data).
+    cov = present / len(weights)
     score = (0.5 + (raw - 0.5) * cov) * 100.0
 
     # ---- tags (shown in the table's "Signals" column) ----
@@ -330,5 +350,10 @@ def tenx_score(m: dict, market_cap: Optional[float],
         tags.append("⚠️ tiny revenue base")
     if (m.get("om_delta") or 0) <= -0.05:
         tags.append("⚠️ margins compressing")
+    # Valuation context tags — shown regardless of the value_aware toggle.
+    if psg is not None and psg <= 0.15:
+        tags.append("🟢 cheap for its growth (P/S÷growth ≤ 0.15)")
+    if ps is not None and ps >= 20:
+        tags.append("💸 priced for perfection (P/S ≥ 20)")
 
     return score, sub, tags

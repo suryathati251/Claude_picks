@@ -1193,6 +1193,9 @@ bad in *absolute* terms and nudge the Score (total capped at −25/+15). **🟢 
 - **🔴 burning cash (negative FCF)** — spending more cash than it generates. *(−5)*
 - **🔴 unprofitable (negative margin)** — losing money at the bottom line. *(−4)*
 - **🔴 value-trap risk (high debt + falling revenue)** — the dangerous combo of leverage and shrinking sales. *(−5)*
+- **🔴 rich / very rich on sales for its growth (P/S > 15 / > 25)** — the absolute-price guard: sector-relative
+  Value ranks can make an expensive stock look "cheap vs peers", so multiples far ahead of the growth paying
+  for them subtract points — this is what keeps QARP's *reasonable price* honest. *(−4 / −8)*
 
 **Why QARP is the default lens:** cheapness alone finds value traps (cheap because dying); quality alone
 overpays. The most evidence-backed simple recipe — Greenblatt's Magic Formula and the academic
@@ -1255,6 +1258,19 @@ elif nav == NAV_RADAR:
                                   index=0, help="How many of the highest-scoring matches to display. "
                                   "All matches = every scanned name above the growth slider.")
 
+        rv1, rv2, _rv3 = st.columns([1.9, 1.5, 2.6])
+        with rv1:
+            tenx_value_aware = st.toggle(
+                "💸 Valuation-aware score", value=False,
+                help="Adds a 6th component (20% weight): P/S ÷ YoY growth — the price paid per unit "
+                     "of growth. A 24× sales name growing 68% scores worse than a 64× name growing "
+                     "680%. Off by default: many past 10x-baggers looked expensive the whole way up. "
+                     "The Δ column keeps tracking the base score.")
+        with rv2:
+            max_ps_choice = st.selectbox(
+                "Max P/S", ["Any", "≤ 5", "≤ 10", "≤ 20"], index=0,
+                help="Hard price-to-sales filter. Names with unknown P/S (no market cap yet) are kept.")
+
         st.caption(f"Quarterly data: **{t_have}/{len(TENX_SYMBOLS)}** tickers scanned · {t_ref} refreshed this "
                    f"load (budget {tenx_budget}/load — coverage builds over a few loads, then stays cached "
                    f"{TENX_TTL//86400} days).")
@@ -1269,12 +1285,18 @@ elif nav == NAV_RADAR:
             mcap_ = q_.get("marketCap")
             p_, lo_, hi_ = q_.get("price"), q_.get("yearLow"), q_.get("yearHigh")
             m52_ = ((p_ - lo_) / (hi_ - lo_)) if (p_ and lo_ is not None and hi_ and hi_ > lo_) else None
-            score_, _sub, tags_ = tenx_score(tm, mcap_, mom_12_1.get(s_), m52_)
-            if score_ is None:
-                continue
-            tenx_scores_all[s_] = round(score_, 1)
-            accel_ = tm.get("rev_accel") if tm.get("rev_accel") is not None else tm.get("seq_accel")
             ttm_ = tm.get("ttm_rev")
+            ps_ = (mcap_ / ttm_) if (mcap_ and ttm_ and ttm_ > 0) else None
+            base_, _sub, tags_ = tenx_score(tm, mcap_, mom_12_1.get(s_), m52_, ps=ps_)
+            if base_ is None:
+                continue
+            tenx_scores_all[s_] = round(base_, 1)   # history always tracks the base score
+            if tenx_value_aware:
+                score_, _sub, tags_ = tenx_score(tm, mcap_, mom_12_1.get(s_), m52_,
+                                                 ps=ps_, value_aware=True)
+            else:
+                score_ = base_
+            accel_ = tm.get("rev_accel") if tm.get("rev_accel") is not None else tm.get("seq_accel")
             tenx_rows.append({
                 "Sym": s_,
                 "Ticker": ("★ " if s_ in SECTORS else "") + s_,
@@ -1287,7 +1309,7 @@ elif nav == NAV_RADAR:
                 "OM Δ ppt": tm["om_delta"] * 100 if tm.get("om_delta") is not None else None,
                 "12-1m %": mom_12_1.get(s_) * 100 if mom_12_1.get(s_) is not None else None,
                 "52w Pos %": m52_ * 100 if m52_ is not None else None,
-                "P/S": (mcap_ / ttm_) if (mcap_ and ttm_ and ttm_ > 0) else None,
+                "P/S": ps_,
                 "Mkt Cap": mcap_,
                 "Latest Q": tm.get("latest_q") or "—",
                 "Signals": " · ".join(tags_) if tags_ else "—",
@@ -1312,7 +1334,11 @@ elif nav == NAV_RADAR:
             st.info("No quarterly data scanned yet — it fills automatically each load, or click "
                     "**Scan next batch** to speed it up.")
         else:
-            tdf = tdf[tdf["Rev YoY (Q) %"] >= float(min_yoy)].sort_values("10x", ascending=False)
+            tdf = tdf[tdf["Rev YoY (Q) %"] >= float(min_yoy)]
+            if max_ps_choice != "Any":
+                _ps_lim = float(max_ps_choice.replace("≤", "").strip())
+                tdf = tdf[tdf["P/S"].isna() | (tdf["P/S"] <= _ps_lim)]
+            tdf = tdf.sort_values("10x", ascending=False)
             _n_map = {"Top 20": 20, "Top 50": 50, "Top 100": 100}
             shown_tenx = tdf.head(_n_map[show_n]) if show_n in _n_map else tdf
             st.caption(f"Showing **{len(shown_tenx)}** of **{len(tdf)}** names clearing the "

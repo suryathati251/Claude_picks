@@ -592,11 +592,22 @@ def compute_flags(fund: dict) -> tuple[float, list[str]]:
     if (rg is not None and rg < 0) and ((de or 0) > 1.0 or (nde or 0) > 3.0):
         delta -= 5; flags.append("🔴 value-trap risk (high debt + falling revenue)")
 
+    # Absolute EXPENSIVENESS on sales, growth-adjusted. Sector-relative Value
+    # percentiles can crown a 24x-sales stock in a pricey sector ("cheap vs
+    # peers"); this is the absolute guard that keeps QARP's 'reasonable price'
+    # promise honest. Hypergrowth earns headroom: the penalty only applies
+    # when the multiple is far ahead of the growth paying for it.
+    ps = m("ps_ratio")
+    if ps is not None:
+        if ps > 25 and (rg or 0) < 1.0:
+            delta -= 8; flags.append("🔴 very rich on sales for its growth (P/S > 25)")
+        elif ps > 15 and (rg or 0) < 0.5:
+            delta -= 4; flags.append("🔴 rich on sales for its growth (P/S > 15)")
+
     # ---- 🟢 positive flags ----
     peg = m("peg")
     if peg is not None and 0 < peg < 1.0:
         delta += 6; flags.append("🟢 cheap vs growth (PEG < 1)")
-    ps = m("ps_ratio")
     if ps is not None and ps < 2.0 and (rg or 0) > 0.10:
         delta += 4; flags.append("🟢 cheap on sales, still growing (P/S < 2)")
     roic = m("roic")
