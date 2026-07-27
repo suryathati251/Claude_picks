@@ -78,7 +78,8 @@ except ImportError:
 from watchlist_growth import GROWTH_WATCHLIST
 from fundamentals import (
     fetch_fundamentals, compute_family_scores, composite_for_lens,
-    compute_flags, safety_gate, value_gate, target_is_sane, has_any,
+    compute_flags, safety_gate, value_gate, value_cap_applies, VALUE_CAP_SCORE,
+    target_is_sane, has_any,
     FMPRateLimitError, FAMILIES, LENSES, DEFAULT_LENS, CALLS_PER_TICKER,
 )
 from yahoo_fallback import (
@@ -1031,12 +1032,18 @@ if nav == NAV_WATCH:
         # get an ABSOLUTE cheapness check — sector-relative Value ranks alone
         # let a 24x-sales stock top QARP as "cheap vs tech peers".
         vgate = 1.0
+        capped = False
         if weights.get("Value", 0) >= 1.0:
             _ey, _ps, _rg = row.get("Earnings Yld %"), row.get("P/S"), row.get("Rev Growth %")
-            vgate = value_gate(_ey / 100.0 if pd.notna(_ey) else None,
-                               _ps if pd.notna(_ps) else None,
-                               _rg / 100.0 if pd.notna(_rg) else None)
+            _eyf = _ey / 100.0 if pd.notna(_ey) else None
+            _psf = _ps if pd.notna(_ps) else None
+            vgate = value_gate(_eyf, _psf, _rg / 100.0 if pd.notna(_rg) else None)
+            capped = value_cap_applies(_eyf, _psf)
         score = min(100.0, max(0.0, base * gate * vgate + adj)) if pd.notna(base) else base
+        if pd.notna(score) and capped:
+            # Too expensive in ABSOLUTE terms (P/S > 20 without a 3.5%+ earnings
+            # yield) to top a reasonable-price lens — whatever the growth.
+            score = min(score, VALUE_CAP_SCORE)
         return pd.Series({"Score": score, "Cov": present, "CovN": len(weights)})
 
     view[["Score", "Cov", "CovN"]] = view.apply(_composite, axis=1)
@@ -1213,10 +1220,13 @@ balance sheet. QARP = Value 1.0 × Quality 1.0 × Safety 0.75 × Growth 0.25 × 
 
 **The absolute value gate (QARP / Blended / Value-Quality only).** Value sub-scores rank *within sector*,
 so in an expensive sector a 24×-sales stock can rank "cheap vs peers". Lenses that promise a reasonable
-price therefore apply a second, **absolute** check — earnings yield (5%+ untouched, P/E≈67 maxes the
-penalty) and the sales multiple vs the growth paying for it (P/S ÷ growth% ≤ 0.3 untouched, ≥ 1.0 maxes
-it). The most expensively priced names keep at most **80%** of their score, on top of the 🔴 rich-on-sales
-flags. Growth/Momentum lenses are deliberately NOT gated — hunting expensive hypergrowth is their job.
+price therefore apply a second, **absolute** check, dominated by earnings yield (5.5%+ / P/E ≤ 18
+untouched; 2.5% / P/E 40 maxes the penalty) plus the sales multiple vs the growth paying for it. The most
+expensively priced names keep at most **70%** of their score — and on top of that sits a hard
+**eligibility cap**: at **P/S > 20 without at least a 3.5% earnings yield (P/E ≲ 29), a stock cannot
+score above 60 in these lenses, whatever its growth** — growth is the Growth lens's job to price, not
+Value's to excuse. Growth/Momentum lenses are deliberately NOT gated or capped — hunting expensive
+hypergrowth is what they're for.
 *Moat is now folded into every lens* (0.5 in quality/value/safety lenses, 0.25 in growth/momentum, 1.0 in
 the Wide-Moat lens), so durable franchises get credit no matter how you rank.
 
@@ -1629,6 +1639,10 @@ elif nav == NAV_LOOKUP:
                                 look_fund.get("rev_growth"))
                      if weights.get("Value", 0) >= 1.0 else 1.0)
             comp = min(100.0, max(0.0, base * gate * vgate + flag_adj)) if base is not None else None
+            if (comp is not None and weights.get("Value", 0) >= 1.0
+                    and value_cap_applies(look_fund.get("earnings_yield"),
+                                          look_fund.get("ps_ratio"))):
+                comp = min(comp, VALUE_CAP_SCORE)
             ccy = REGION_CURRENCY.get(look_region, "USD")
 
             tag = f"_{look_sector}_" if is_member else "_(not in watchlist — ranked vs whole universe)_"

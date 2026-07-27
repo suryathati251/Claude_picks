@@ -165,31 +165,49 @@ def safety_gate(safety_raw: Optional[float]) -> float:
 # sector a 24x-sales stock can score "cheap vs peers" and top QARP. This gate
 # asks the absolute question instead: what's the earnings yield, and what's
 # the sales multiple relative to the growth paying for it?
-VALUE_GATE_FLOOR = 0.80   # absurdly priced names keep at most 80% of their score
+VALUE_GATE_FLOOR = 0.70   # absurdly priced names keep at most 70% of their score
+
+# Eligibility cap for reasonable-price lenses: above this sales multiple
+# WITHOUT at least this earnings yield, a stock cannot score above the cap —
+# whatever its growth. Growth has its own lens; QARP's promise is price.
+VALUE_CAP_PS = 20.0
+VALUE_CAP_MIN_EY = 0.035     # 3.5% earnings yield ≈ P/E 29
+VALUE_CAP_SCORE = 60.0
+
+
+def value_cap_applies(earnings_yield: Optional[float],
+                      ps_ratio: Optional[float]) -> bool:
+    """True when a name is too expensive in ABSOLUTE terms to top a
+    reasonable-price lens: P/S above 20 without a 3.5%+ earnings yield.
+    (First fix attempt used growth exemptions — a 24x-sales name growing 60%
+    slid straight through them and kept the QARP crown. No growth excuses
+    here: growth is priced by the Growth lens, not the Value promise.)"""
+    return bool(ps_ratio is not None and ps_ratio > VALUE_CAP_PS
+                and (earnings_yield is None or earnings_yield < VALUE_CAP_MIN_EY))
 
 
 def value_gate(earnings_yield: Optional[float], ps_ratio: Optional[float],
                rev_growth: Optional[float]) -> float:
     """Multiplier in [VALUE_GATE_FLOOR, 1.0]. Fractions, not percents.
 
-    Two halves of the penalty:
-    * earnings yield — 5%+ (P/E <= 20) is untouched; 1.5% (P/E ~67) maxes it.
-    * growth-adjusted sales multiple — psg = P/S / growth%. <= 0.30 untouched
-      (e.g. 4x sales growing 50%); >= 1.0 maxes it (24x growing 24%).
-    Missing data contributes no penalty — the gate never punishes blanks.
+    Earnings yield dominates (60% of the penalty): 5.5%+ (P/E <= 18) is
+    untouched, 2.5% (P/E 40) maxes it — a value lens should care what you
+    earn on the price TODAY. The sales multiple vs growth is the other 40%:
+    P/S ÷ growth% <= 0.30 untouched, >= 1.0 maxed. Missing data contributes
+    no penalty — the gate never punishes blanks.
     """
     def c01(x: float) -> float:
         return max(0.0, min(1.0, x))
 
     penal = 0.0
     if earnings_yield is not None:
-        penal += c01((0.05 - earnings_yield) / 0.035) * 0.5
+        penal += c01((0.055 - earnings_yield) / 0.030) * 0.6
     if ps_ratio is not None and ps_ratio > 0:
         if rev_growth is not None and rev_growth > 0:
             psg = ps_ratio / (rev_growth * 100.0)
-            penal += c01((psg - 0.30) / 0.70) * 0.5
+            penal += c01((psg - 0.30) / 0.70) * 0.4
         elif ps_ratio > 15:
-            penal += 0.5
+            penal += 0.4
     return 1.0 - (1.0 - VALUE_GATE_FLOOR) * min(penal, 1.0)
 
 
