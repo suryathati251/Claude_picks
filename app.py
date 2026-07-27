@@ -78,8 +78,8 @@ except ImportError:
 from watchlist_growth import GROWTH_WATCHLIST
 from fundamentals import (
     fetch_fundamentals, compute_family_scores, composite_for_lens,
-    compute_flags, safety_gate, target_is_sane, has_any, FMPRateLimitError,
-    FAMILIES, LENSES, DEFAULT_LENS, CALLS_PER_TICKER,
+    compute_flags, safety_gate, value_gate, target_is_sane, has_any,
+    FMPRateLimitError, FAMILIES, LENSES, DEFAULT_LENS, CALLS_PER_TICKER,
 )
 from yahoo_fallback import (
     fetch_quotes_yahoo, fetch_fundamentals_yahoo, fetch_momentum_yahoo, HAVE_YF,
@@ -1027,7 +1027,16 @@ if nav == NAV_WATCH:
         # fragile balance sheet caps the score even in lenses that ignore Safety.
         s_raw = row.get("Safety %")
         gate = safety_gate(s_raw / 100.0) if pd.notna(s_raw) else 1.0
-        score = min(100.0, max(0.0, base * gate + adj)) if pd.notna(base) else base
+        # Value gate: lenses promising a reasonable price (Value weight >= 1)
+        # get an ABSOLUTE cheapness check — sector-relative Value ranks alone
+        # let a 24x-sales stock top QARP as "cheap vs tech peers".
+        vgate = 1.0
+        if weights.get("Value", 0) >= 1.0:
+            _ey, _ps, _rg = row.get("Earnings Yld %"), row.get("P/S"), row.get("Rev Growth %")
+            vgate = value_gate(_ey / 100.0 if pd.notna(_ey) else None,
+                               _ps if pd.notna(_ps) else None,
+                               _rg / 100.0 if pd.notna(_rg) else None)
+        score = min(100.0, max(0.0, base * gate * vgate + adj)) if pd.notna(base) else base
         return pd.Series({"Score": score, "Cov": present, "CovN": len(weights)})
 
     view[["Score", "Cov", "CovN"]] = view.apply(_composite, axis=1)
@@ -1201,6 +1210,13 @@ bad in *absolute* terms and nudge the Score (total capped at −25/+15). **🟢 
 overpays. The most evidence-backed simple recipe — Greenblatt's Magic Formula and the academic
 quality-minus-junk literature — is to demand **both**: high earnings/FCF yield AND high ROIC, with a clean
 balance sheet. QARP = Value 1.0 × Quality 1.0 × Safety 0.75 × Growth 0.25 × Moat 0.5, flag-adjusted.
+
+**The absolute value gate (QARP / Blended / Value-Quality only).** Value sub-scores rank *within sector*,
+so in an expensive sector a 24×-sales stock can rank "cheap vs peers". Lenses that promise a reasonable
+price therefore apply a second, **absolute** check — earnings yield (5%+ untouched, P/E≈67 maxes the
+penalty) and the sales multiple vs the growth paying for it (P/S ÷ growth% ≤ 0.3 untouched, ≥ 1.0 maxes
+it). The most expensively priced names keep at most **80%** of their score, on top of the 🔴 rich-on-sales
+flags. Growth/Momentum lenses are deliberately NOT gated — hunting expensive hypergrowth is their job.
 *Moat is now folded into every lens* (0.5 in quality/value/safety lenses, 0.25 in growth/momentum, 1.0 in
 the Wide-Moat lens), so durable franchises get credit no matter how you rank.
 
@@ -1609,7 +1625,10 @@ elif nav == NAV_LOOKUP:
             base = (num / den * 100) if den > 0 else None
             flag_adj, flag_list = compute_flags(look_fund)
             gate = safety_gate(look_fund.get("safety"))
-            comp = min(100.0, max(0.0, base * gate + flag_adj)) if base is not None else None
+            vgate = (value_gate(look_fund.get("earnings_yield"), look_fund.get("ps_ratio"),
+                                look_fund.get("rev_growth"))
+                     if weights.get("Value", 0) >= 1.0 else 1.0)
+            comp = min(100.0, max(0.0, base * gate * vgate + flag_adj)) if base is not None else None
             ccy = REGION_CURRENCY.get(look_region, "USD")
 
             tag = f"_{look_sector}_" if is_member else "_(not in watchlist — ranked vs whole universe)_"

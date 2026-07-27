@@ -159,6 +159,40 @@ def safety_gate(safety_raw: Optional[float]) -> float:
     return SAFETY_GATE_FLOOR + (1.0 - SAFETY_GATE_FLOOR) * s
 
 
+# Value gate: absolute-cheapness multiplier for lenses that PROMISE a
+# reasonable price (Value weight >= 1.0 — QARP, Blended, Value/Quality).
+# Why it exists: the Value family ranks WITHIN sector, so in an expensive
+# sector a 24x-sales stock can score "cheap vs peers" and top QARP. This gate
+# asks the absolute question instead: what's the earnings yield, and what's
+# the sales multiple relative to the growth paying for it?
+VALUE_GATE_FLOOR = 0.80   # absurdly priced names keep at most 80% of their score
+
+
+def value_gate(earnings_yield: Optional[float], ps_ratio: Optional[float],
+               rev_growth: Optional[float]) -> float:
+    """Multiplier in [VALUE_GATE_FLOOR, 1.0]. Fractions, not percents.
+
+    Two halves of the penalty:
+    * earnings yield — 5%+ (P/E <= 20) is untouched; 1.5% (P/E ~67) maxes it.
+    * growth-adjusted sales multiple — psg = P/S / growth%. <= 0.30 untouched
+      (e.g. 4x sales growing 50%); >= 1.0 maxes it (24x growing 24%).
+    Missing data contributes no penalty — the gate never punishes blanks.
+    """
+    def c01(x: float) -> float:
+        return max(0.0, min(1.0, x))
+
+    penal = 0.0
+    if earnings_yield is not None:
+        penal += c01((0.05 - earnings_yield) / 0.035) * 0.5
+    if ps_ratio is not None and ps_ratio > 0:
+        if rev_growth is not None and rev_growth > 0:
+            psg = ps_ratio / (rev_growth * 100.0)
+            penal += c01((psg - 0.30) / 0.70) * 0.5
+        elif ps_ratio > 15:
+            penal += 0.5
+    return 1.0 - (1.0 - VALUE_GATE_FLOOR) * min(penal, 1.0)
+
+
 def edge_net_debt_ebitda(total_debt: Optional[float], cash: Optional[float],
                          ebitda: Optional[float]) -> Optional[float]:
     """Net-debt / EBITDA with edge handling so risky names don't escape the
@@ -607,7 +641,12 @@ def compute_flags(fund: dict) -> tuple[float, list[str]]:
     # ---- 🟢 positive flags ----
     peg = m("peg")
     if peg is not None and 0 < peg < 1.0:
-        delta += 6; flags.append("🟢 cheap vs growth (PEG < 1)")
+        if ps is not None and ps > 15:
+            # A PEG built off earnings can look great while the SALES multiple
+            # is extreme (huge-margin names) — temper the bonus there.
+            delta += 3; flags.append("🟢 cheap vs growth (PEG < 1 — tempered, rich on sales)")
+        else:
+            delta += 6; flags.append("🟢 cheap vs growth (PEG < 1)")
     if ps is not None and ps < 2.0 and (rg or 0) > 0.10:
         delta += 4; flags.append("🟢 cheap on sales, still growing (P/S < 2)")
     roic = m("roic")
