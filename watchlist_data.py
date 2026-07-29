@@ -469,6 +469,12 @@ WATCHLIST = [
      "thesis": "Big pharma at a low multiple post-COVID normalization; oncology (Seagen) pipeline + cost cuts. Value/turnaround with a high dividend.",
      "catalyst": "Oncology pipeline; cost/margin program; new launches",
      "risk": "Patent cliffs (2028+); COVID-revenue rolloff; pipeline execution"},
+
+    # ---- ADDED on request: CLS ----  (IREN already added previously)
+    {"ticker": "CLS", "region": "US", "name": "Celestica", "sector": "AI/Semis", "target": None,
+     "thesis": "Electronics-manufacturing / hardware provider surging on AI data-center demand (networking switches, servers) for hyperscalers; margin + mix improving.",
+     "catalyst": "Hyperscaler AI networking (800G/1.6T); CCS segment growth; margin expansion",
+     "risk": "Customer concentration; EMS cyclicality; low-margin manufacturing base"},
 ]
 
 SECTOR_ORDER = [
