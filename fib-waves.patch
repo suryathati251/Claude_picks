@@ -1,0 +1,879 @@
+From a10f3da8b52d4b2004ead1dd92503ced6a987e6a Mon Sep 17 00:00:00 2001
+From: Surya <noreply@example.com>
+Date: Tue, 22 Sep 2026 15:43:57 +0000
+Subject: [PATCH] Add Elliott Wave / Fibonacci stage indicators (Wave, Wave
+ conf, Next Fib, Wave invalid columns + wave chart)
+
+---
+ README.md         |   8 +
+ app.py            | 118 +++++++++-
+ fib_waves.py      | 576 ++++++++++++++++++++++++++++++++++++++++++++++
+ requirements.txt  |   1 +
+ yahoo_fallback.py |  40 ++++
+ 5 files changed, 742 insertions(+), 1 deletion(-)
+ create mode 100644 fib_waves.py
+
+diff --git a/README.md b/README.md
+index 50ed78b..38c6ab5 100644
+--- a/README.md
++++ b/README.md
+@@ -24,6 +24,14 @@ Open the deployed URL in your browser each morning — fresh prices on every pag
+   average, 52-week range position, RSI(14), and watchlist breadth, each normalized and averaged, with
+   a zone-based deployment stance (accumulate into extreme fear · plain DCA in neutral · patience with
+   extra cash in extreme greed). Timing caveats included; not investment advice.
++- **🌊 Elliott Wave / Fibonacci stage** (`fib_waves.py`) — **Wave**, **Wave conf**, **Next Fib** and
++  **Wave invalid** columns on the watchlist: which leg of a 5-wave move (1–5, ↑/↓) or of the A-B-C
++  correction each stock is in, how well the legs fit the textbook Fibonacci ratios (confidence
++  calibrated on random-walk prices — only ~1 in 10 noise counts reaches High), the nearest Fibonacci
++  target ahead, and the price that would break the count. A **🌊 chart** expander under the table draws
++  the count, targets and invalidation line for any ticker; the Lookup tab shows the read too. Free
++  Yahoo daily bars (2y), recounted once a day — **zero FMP quota**. Elliott counts are subjective:
++  context, not a trade signal. Run `python fib_waves.py` to re-check the calibration.
+ - **Tab navigation** — 📊 Watchlist · 🚀 10x Radar · 🎯 Market & Entry · 🔎 Lookup. The radar's
+   market-scan only loads when its tab is open, so the default view stays fast.
+ - **Radar context columns** — **P/S** (market cap ÷ TTM revenue: how much of the explosion is already
+diff --git a/app.py b/app.py
+index 2014bd8..4ad816f 100644
+--- a/app.py
++++ b/app.py
+@@ -47,7 +47,7 @@ import importlib as _importlib
+ import sys as _sys
+ for _m in ("fundamentals", "yahoo_fallback", "market_risk",
+            "watchlist_data", "watchlist_growth", "tenx_universe",
+-           "tenx_radar", "entry_meter", "insider", "options_income"):
++           "tenx_radar", "entry_meter", "insider", "options_income", "fib_waves"):
+     if _m in _sys.modules:
+         try:
+             _importlib.reload(_sys.modules[_m])
+@@ -84,7 +84,9 @@ from fundamentals import (
+ )
+ from yahoo_fallback import (
+     fetch_quotes_yahoo, fetch_fundamentals_yahoo, fetch_momentum_yahoo, HAVE_YF,
++    fetch_price_history_yahoo,
+ )
++from fib_waves import analyze_waves, wave_chart
+ from tenx_universe import SCAN_SYMBOLS, SCAN_NAMES, SCAN_SECTORS
+ from tenx_radar import (fetch_quarterly_yahoo, compute_tenx_metrics, tenx_score,
+                         fetch_next_earnings, fetch_last_earnings_surprise)
+@@ -141,6 +143,7 @@ PUTS_MAX_TICKERS = 12                # options chains fetched per load (~2-3 cal
+ INSIDER_TTL = 14 * 24 * 60 * 60      # insider summaries change slowly
+ INSIDER_BUDGET = int(os.getenv("INSIDER_BUDGET", "8"))   # FMP calls/load (watchlist only)
+ HISTORY_RETAIN_DAYS = 180            # daily score snapshots kept on disk
++WAVE_TTL = 24 * 60 * 60              # Elliott Wave / Fib stages: daily bars -> recount daily
+ 
+ 
+ def get_api_key() -> Optional[str]:
+@@ -204,6 +207,8 @@ def insider_store(): return PersistentStore(os.path.join(_cache_dir(), "insider.
+ def history_store(): return PersistentStore(os.path.join(_cache_dir(), "history.json"))
+ @st.cache_resource
+ def options_store(): return PersistentStore(os.path.join(_cache_dir(), "options.json"))
++@st.cache_resource
++def wave_store(): return PersistentStore(os.path.join(_cache_dir(), "waves.json"))
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -476,6 +481,62 @@ def fetch_momentum(symbols, force):
+     return out
+ 
+ 
++@st.cache_data(ttl=WAVE_TTL, show_spinner=False)
++def cached_price_history(symbol: str):
++    """2y daily OHLC for ONE ticker (wave chart / Lookup). Free Yahoo, cached a day."""
++    return fetch_price_history_yahoo([symbol]).get(symbol)
++
++
++def fetch_waves(symbols, force):
++    """Disk-cached Elliott Wave / Fibonacci stage per ticker (free Yahoo history,
++    zero FMP calls). Returns {symbol: summary dict | None}. Recounts daily."""
++    if not HAVE_YF:
++        return {}
++    store = wave_store()
++    now = time.time()
++    out, need = {}, []
++    for s in symbols:
++        e = store.get(s)
++        if _fresh(e, WAVE_TTL) and not force:
++            out[s] = e["data"]
++        else:
++            need.append(s)
++    if need:
++        hist = {}
++        for i in range(0, len(need), 60):          # bulk downloads in chunks
++            try:
++                hist.update(fetch_price_history_yahoo(need[i:i + 60]))
++            except Exception as e:  # noqa: BLE001
++                logger.warning("wave history fetch failed: %s", str(e)[:120])
++        for sym in need:
++            px = hist.get(sym)
++            if px is None:
++                continue
++            try:
++                res = analyze_waves(px, symbol=sym).summary()
++            except Exception as e:  # noqa: BLE001
++                logger.warning("wave analysis %s failed: %s", sym, str(e)[:120]); res = None
++            store.set(sym, {"data": res, "ts": now})
++            out[sym] = res
++        if hist:
++            store.flush()
++    return out
++
++
++WAVE_CONF_ICON = {"High": "🟢 High", "Medium": "🟡 Med", "Low": "⚪ Low"}
++
++
++def wave_cells(w):
++    """(Wave, Wave conf, Next Fib, Invalid) display cells from a wave summary."""
++    if not w or not w.get("stage"):
++        return "—", "", "", None
++    arrow = "↑" if w.get("trend") == "up" else "↓"
++    stage = f"{w['stage']} {arrow}" + (" ⏳" if w.get("maybe_ending") else "")
++    nxt = w.get("next_level")
++    nxt_s = f"{nxt[1]:,.2f} · {nxt[0]}" if nxt else ""
++    return stage, WAVE_CONF_ICON.get(w.get("confidence"), ""), nxt_s, w.get("invalidation")
++
++
+ def fetch_scan_quotes(api_key, symbols):
+     """Quotes for the SCAN universe (market cap + 52w range for the 10x Radar).
+     Deliberately batch-only on FMP — no per-ticker fallback, so a plan that
+@@ -1076,6 +1137,10 @@ if nav == NAV_WATCH:
+         st.caption("ℹ️ Insider data isn't included in this FMP plan — the **Insider** column stays "
+                    "blank and no quota is spent retrying.")
+ 
++    # Elliott Wave / Fibonacci stage (free Yahoo daily bars, cached a day, zero FMP calls).
++    with st.spinner("Counting Elliott waves (daily; cached)…"):
++        wave_data = fetch_waves(SYMBOLS, force_funds)
++
+ 
+     def render_display(row):
+         """Display row: NUMERIC cells stay numeric (header-click sorting works);
+@@ -1084,6 +1149,7 @@ if nav == NAV_WATCH:
+         target_str = fmt_price(row["Target"], row["Currency"]) if pd.notna(row["Target"]) else "—"
+         if pd.notna(row["Target"]) and not row["Target OK"]:
+             target_str += " ⚠️"
++        w_stage, w_conf, w_next, w_inv = wave_cells(wave_data.get(row["Ticker"]))
+         return pd.Series({
+             "Ticker": f"{row['Ticker']}  ({row['Region']})",
+             "Name": row["Name"],
+@@ -1108,6 +1174,10 @@ if nav == NAV_WATCH:
+             "Insider": insider_display(insider_data.get(row["Ticker"]), row["52w Pos %"]),
+             "12-1m": row["Mom 12-1 %"],
+             "52w": row["52w Pos %"],
++            "Wave": w_stage,
++            "Wave conf": w_conf,
++            "Next Fib": w_next,
++            "Wave invalid": w_inv,
+             "Mkt Cap": row["Mkt Cap"],
+             "Target": target_str,
+             "Upside %": row["Upside %"],
+@@ -1144,6 +1214,16 @@ if nav == NAV_WATCH:
+             "EV/EBIT": ncol("%.1f", "Blank when EBIT ≤ 0 (not meaningful)."),
+             "D/E": ncol("%.2f"),
+             "12-1m": ncol("%+.0f%%"), "52w": ncol("%.0f%%"),
++            "Wave": st.column_config.TextColumn(
++                help="Elliott Wave stage the price is in now: 1–5 = the 5-wave impulse, A/B/C = the correction "
++                     "after it. The arrow is the impulse direction (↑ up-move, ↓ down-move) — so 'B ↑' is a "
++                     "correction of an up-move. ⏳ = wave 5 already hit its minimum Fibonacci target."),
++            "Wave conf": st.column_config.TextColumn(
++                help="How well the legs fit Fibonacci ratios vs. chance. On random prices only ~1 in 10 "
++                     "counts reaches High. Wave 1–2 counts are always Low (no finished legs to measure)."),
++            "Next Fib": st.column_config.TextColumn(
++                width="medium", help="Nearest Fibonacci target ahead of the price for the wave in progress."),
++            "Wave invalid": ncol("%.2f", "The count is wrong if price crosses this level."),
+             "Mkt Cap": st.column_config.NumberColumn(
+                 format="compact", help="Native currency for non-US listings."),
+             "Upside %": ncol("%+.1f%%"),
+@@ -1158,6 +1238,35 @@ if nav == NAV_WATCH:
+                "display-only, doesn't move the Score). "
+                "Full list under **ℹ️ How the score works & caveats** below.")
+ 
++    with st.expander("🌊 Elliott Wave / Fibonacci stage chart", expanded=False):
++        st.caption("Pick a ticker to see its wave count, the Fibonacci levels for the wave in progress, "
++                   "and the price that would invalidate the count. Elliott counts are subjective — "
++                   "use this as context, not a trade signal.")
++        wave_pick = st.selectbox("Ticker", options=list(view["Ticker"]), index=None,
++                                 placeholder="Choose a ticker…", key="wave_pick")
++        if wave_pick:
++            if not HAVE_YF:
++                st.warning("Install `yfinance` to enable wave charts.")
++            else:
++                with st.spinner(f"Loading {wave_pick} history…"):
++                    _px = cached_price_history(wave_pick)
++                if _px is None:
++                    st.info(f"No usable price history for {wave_pick} right now (Yahoo) — try again later.")
++                else:
++                    _wr = analyze_waves(_px, symbol=wave_pick)
++                    if _wr.stage is None:
++                        st.info(_wr.note)
++                    else:
++                        try:
++                            st.plotly_chart(wave_chart(_px, _wr), key="wave_chart")
++                        except ImportError:
++                            st.warning("Add `plotly` to requirements.txt to draw the chart.")
++                        st.markdown(f"**{_wr.label} · {_wr.confidence} confidence.** {_wr.note}")
++                        _bits = [f"{k} = {v:.3f}" for k, v in _wr.ratios.items()]
++                        if _bits:
++                            st.caption("Measured ratios: " + " · ".join(_bits)
++                                       + (f" · Alternate count: {_wr.alternate}" if _wr.alternate else ""))
++
+     st.divider()
+     csv = view.drop(columns=["Target OK"], errors="ignore").to_csv(index=False).encode()
+     st.download_button("📥 Download current view as CSV", data=csv,
+@@ -1694,6 +1803,13 @@ elif nav == NAV_LOOKUP:
+                         st.caption(f"**🚀 10x Radar:** {t_sc:.0f}/100 · Rev YoY (Q) "
+                                    f"{tqm['q_rev_yoy']*100:+.0f}%"
+                                    + (" · " + " · ".join(t_tags) if t_tags else ""))
++            # Elliott Wave read for the looked-up ticker (1 free Yahoo call, cached a day).
++            if HAVE_YF:
++                _lpx = cached_price_history(query)
++                if _lpx is not None:
++                    _lw = analyze_waves(_lpx, symbol=query)
++                    if _lw.stage is not None:
++                        st.caption(f"**🌊 Wave:** {_lw.label} · {_lw.confidence} confidence — {_lw.note}")
+             if is_member:
+                 thesis = next((it["thesis"] for it in WATCHLIST if it["ticker"] == query), "")
+                 if thesis:
+diff --git a/fib_waves.py b/fib_waves.py
+new file mode 100644
+index 0000000..5157cd1
+--- /dev/null
++++ b/fib_waves.py
+@@ -0,0 +1,576 @@
++"""
++fib_waves.py — Elliott Wave stage detection, scored with Fibonacci ratios.
++
++For each stock this answers: "Which leg of a 5-wave move (1-2-3-4-5) or of the
++A-B-C correction after it is the price in right now, and how well does the
++count fit the classic Fibonacci proportions?"
++
++How it works
++------------
++1. **Swings.** A ZigZag marks swing highs/lows. The swing size is a multiple of
++   the stock's own volatility (median ATR as % of price), so a sleepy utility
++   and a hypergrowth name are both measured in their own units. "auto" mode
++   tries several sizes (small / medium / large swings) and keeps the best count.
++2. **Hard rules** (a count that breaks any of these is thrown out):
++   wave 2 never retraces all of wave 1 · wave 3 goes beyond wave 1 and is never
++   the shortest of 1/3/5 · wave 4 never overlaps wave 1 · wave 5 goes beyond 3 ·
++   a regular B never exceeds the wave-5 extreme.
++3. **Fibonacci score.** Surviving counts are scored on how close each finished
++   leg is to its textbook ratio (wave 2 ≈ 50–61.8% of 1, wave 3 ≈ 1.618× of 1,
++   wave 4 ≈ 23.6–38.2% of 3, wave 5 ≈ 0.618–1× of 1, A ≈ 38–62% of 0→5,
++   B ≈ 50–79% of A), each measured against what a random walk scores, plus
++   credit when the count starts at a real extreme and a penalty when an
++   impulse count fights the 200-day average.
++4. **Confidence** cut-offs are calibrated on random-walk prices (see
++   ``calibrate()``): on pure noise only ~1 count in 10 reaches High.
++
++Elliott Wave is subjective by nature — two analysts often count the same chart
++differently. Treat the output as context (where are we in the swing, where is
++the next Fibonacci level, where is the count wrong), never as a trade signal.
++
++Public API
++----------
++``analyze_waves(prices, symbol=None, sensitivity="auto") -> WaveResult``
++``wave_chart(prices, result) -> plotly Figure``
++``normalize_prices(data) -> DataFrame[date, open, high, low, close]``
++"""
++from __future__ import annotations
++
++import math
++from dataclasses import dataclass, field
++from typing import Any, Optional
++
++import numpy as np
++import pandas as pd
++
++# --------------------------------------------------------------------------------------
++# Settings
++# --------------------------------------------------------------------------------------
++# Textbook Fibonacci proportions for each leg.
++W2_OF_W1 = (0.5, 0.618)          # wave 2 retraces 50–61.8% of wave 1
++W3_OF_W1 = (1.618, 2.618, 1.0)   # wave 3 extends 1.618× wave 1 (sometimes 2.618× or 1×)
++W4_OF_W3 = (0.236, 0.382)        # wave 4 retraces 23.6–38.2% of wave 3
++W5_OF_W1 = (0.618, 1.0)          # wave 5 ≈ 0.618× or 1× wave 1
++A_OF_IMPULSE = (0.382, 0.5, 0.618)  # A retraces 38.2–61.8% of the whole 0→5 move
++B_OF_A = (0.5, 0.618, 0.786)     # B retraces 50–78.6% of A
++FIT_TOL = 0.12                   # ±12% (log scale) counts as a close fit
++
++# Average fit each ratio gets on random-walk prices — only a fit ABOVE this is
++# evidence for the count (measured by calibrate(); re-run it if you change rules).
++BASELINE = {"W2/W1": 0.39, "W3/W1": 0.52, "W4/W3": 0.45, "W5/W1": 0.30,
++            "A/(0-5)": 0.55, "B/A": 0.65}
++FIB_WEIGHT = 1.0
++START_WEIGHT = 0.6       # credit when wave 0 is the most extreme price of the prior ~6 months
++START_HORIZON = 126      # bars (~6 months)
++TREND_WEIGHT = 0.3       # impulse counts agreeing / fighting the 200-day average
++
++# Confidence cut-offs on the final score, from random-walk calibration.
++HIGH_SCORE = 1.0
++MEDIUM_SCORE = 0.8
++
++AUTO_ATR_MULTIPLES = (3.0, 4.5, 6.0)            # swing sizes tried in "auto" mode
++SENSITIVITY = {"high": 3.0, "medium": 4.5, "low": 6.0}
++LABELS = ["0", "1", "2", "3", "4", "5", "A", "B", "C"]
++STAGE_OF = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: "A", 7: "B", 8: "C"}
++MIN_BARS = 150
++
++
++# --------------------------------------------------------------------------------------
++# Result
++# --------------------------------------------------------------------------------------
++@dataclass
++class WaveResult:
++    symbol: Optional[str] = None
++    stage: Any = None                 # 1..5, "A", "B", "C" or None
++    trend: str = ""                   # "up" / "down" (direction of the 5-wave move)
++    label: str = "No clear count"
++    confidence: str = ""              # "High" / "Medium" / "Low"
++    score: float = 0.0
++    note: str = ""
++    next_level: Optional[tuple] = None           # (name, price) nearest Fibonacci level ahead
++    targets: list = field(default_factory=list)  # [(name, price)]
++    invalidation: Optional[float] = None
++    invalidation_reason: str = ""
++    ratios: dict = field(default_factory=dict)   # measured ratios, e.g. {"W2/W1": 0.59}
++    points: list = field(default_factory=list)   # [(date, price, "0".."5","A","B")]
++    leg_end: Optional[tuple] = None              # (date, price, "3?") extreme of the leg in progress
++    zigzag: list = field(default_factory=list)   # [(date, price)] every swing point
++    swing_pct: float = 0.0
++    maybe_ending: bool = False
++    alternate: str = ""
++    last_close: float = float("nan")
++    last_date: Any = None
++
++    @property
++    def wave(self) -> str:
++        return "" if self.stage is None else str(self.stage)
++
++    def as_row(self) -> dict:
++        """Flat dict for a screener table."""
++        nxt = f"{self.next_level[1]:,.2f} ({self.next_level[0]})" if self.next_level else ""
++        return {
++            "Wave": self.wave,
++            "Trend": self.trend.title(),
++            "Wave confidence": self.confidence,
++            "Next Fib level": nxt,
++            "Invalid beyond": self.invalidation,
++        }
++
++    def summary(self) -> dict:
++        """JSON-safe dict (for disk caches) — everything except the chart geometry."""
++        return {
++            "stage": self.wave or None, "trend": self.trend, "label": self.label,
++            "confidence": self.confidence, "score": round(float(self.score), 3),
++            "note": self.note,
++            "next_level": list(self.next_level) if self.next_level else None,
++            "invalidation": self.invalidation, "invalidation_reason": self.invalidation_reason,
++            "ratios": self.ratios, "maybe_ending": self.maybe_ending,
++            "alternate": self.alternate, "last_close": _safe(self.last_close),
++        }
++
++
++def _safe(v):
++    try:
++        v = float(v)
++        return v if math.isfinite(v) else None
++    except (TypeError, ValueError):
++        return None
++
++
++# --------------------------------------------------------------------------------------
++# Data
++# --------------------------------------------------------------------------------------
++def normalize_prices(data) -> pd.DataFrame:
++    """Return date/open/high/low/close sorted oldest->newest.
++
++    Accepts a yfinance DataFrame (DatetimeIndex, Open/High/Low/Close), FMP /stable
++    responses (list of dicts), FMP v3 ({"historical": [...]}), or any DataFrame
++    with those columns in any case.
++    """
++    if isinstance(data, dict) and "historical" in data:
++        data = data["historical"]
++    df = pd.DataFrame(data).copy() if not isinstance(data, pd.DataFrame) else data.copy()
++    if isinstance(df.columns, pd.MultiIndex):
++        df.columns = [c[-1] if c[-1] else c[0] for c in df.columns]
++    df.columns = [str(c).split(".")[-1].strip().lower() for c in df.columns]
++    if "date" not in df.columns:
++        df = df.reset_index()
++        df.columns = [str(c).lower() for c in df.columns]
++        if "date" not in df.columns:
++            df = df.rename(columns={df.columns[0]: "date"})
++    if "close" not in df.columns and "adjclose" in df.columns:
++        df["close"] = df["adjclose"]
++    for c in ("open", "high", "low"):
++        if c not in df.columns:
++            df[c] = df["close"]
++    df = df[["date", "open", "high", "low", "close"]].copy()
++    df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_localize(None)
++    for c in ("open", "high", "low", "close"):
++        df[c] = pd.to_numeric(df[c], errors="coerce")
++    df = df.dropna(subset=["date", "close"]).sort_values("date").drop_duplicates("date")
++    df["high"] = df[["high", "close"]].max(axis=1)
++    df["low"] = df[["low", "close"]].min(axis=1)
++    return df.reset_index(drop=True)
++
++
++def _atr_pct(df: pd.DataFrame, n: int = 14) -> float:
++    h, l, c = df["high"].values, df["low"].values, df["close"].values
++    prev = np.r_[c[0], c[:-1]]
++    tr = np.maximum.reduce([h - l, np.abs(h - prev), np.abs(l - prev)])
++    atr = pd.Series(tr).rolling(n, min_periods=n).mean().values
++    pct = atr / c
++    pct = pct[np.isfinite(pct)][-250:]
++    return float(np.median(pct)) if len(pct) else 0.02
++
++
++# --------------------------------------------------------------------------------------
++# Swings
++# --------------------------------------------------------------------------------------
++def _zigzag(high: np.ndarray, low: np.ndarray, thr: float):
++    """Swing points as [(bar, price, +1 high / -1 low)], plus the tentative extreme
++    of the leg still in progress (bar, price, kind)."""
++    n = len(high)
++    pivots = []
++    hi_i = lo_i = 0
++    trend = 0
++    for i in range(1, n):
++        if trend == 0:
++            if high[i] > high[hi_i]:
++                hi_i = i
++            if low[i] < low[lo_i]:
++                lo_i = i
++            if lo_i < hi_i and high[hi_i] >= low[lo_i] * (1 + thr):
++                pivots.append((lo_i, low[lo_i], -1)); trend = 1
++            elif hi_i < lo_i and low[lo_i] <= high[hi_i] * (1 - thr):
++                pivots.append((hi_i, high[hi_i], 1)); trend = -1
++        elif trend == 1:
++            if high[i] >= high[hi_i]:
++                hi_i = i
++            elif low[i] <= high[hi_i] * (1 - thr):
++                pivots.append((hi_i, high[hi_i], 1)); trend = -1; lo_i = i
++        else:
++            if low[i] <= low[lo_i]:
++                lo_i = i
++            elif high[i] >= low[lo_i] * (1 + thr):
++                pivots.append((lo_i, low[lo_i], -1)); trend = 1; hi_i = i
++    if trend == 1:
++        tent = (hi_i, high[hi_i], 1)
++    elif trend == -1:
++        tent = (lo_i, low[lo_i], -1)
++    else:
++        tent = None
++    return pivots, tent
++
++
++# --------------------------------------------------------------------------------------
++# Scoring
++# --------------------------------------------------------------------------------------
++def _fit(ratio: float, targets) -> float:
++    """1.0 at a textbook ratio, fading to ~0 about 25% away (log scale)."""
++    if not ratio or ratio <= 0 or not math.isfinite(ratio):
++        return 0.0
++    return max(math.exp(-0.5 * (math.log(ratio / t) / FIT_TOL) ** 2) for t in targets)
++
++
++RATIO_TARGETS = {"W2/W1": W2_OF_W1, "W3/W1": W3_OF_W1, "W4/W3": W4_OF_W3,
++                 "W5/W1": W5_OF_W1, "A/(0-5)": A_OF_IMPULSE, "B/A": B_OF_A}
++
++
++def _start_significance(nl: np.ndarray, i0: int, p0: float) -> float:
++    """1.0 when wave 0 is the most extreme price of the prior ~6 months;
++    proportionally less when a more extreme price is more recent."""
++    beyond = np.flatnonzero(nl[:i0] < p0 - 1e-12)
++    bars_back = i0 - (beyond[-1] if len(beyond) else -START_HORIZON)
++    return min(1.0, bars_back / START_HORIZON)
++
++
++@dataclass
++class _Count:
++    d: int                 # +1 up-trend impulse, -1 down-trend impulse
++    bars: list             # bar index of each completed point (0..k)
++    q: list                # normalized price (d * price) of each completed point
++    e: float               # normalized extreme of the leg in progress
++    e_bar: int
++    k: int                 # completed points after wave 0 → current wave = k + 1
++    ratios: dict
++    score: float
++    thr: float
++
++
++def _valid(p: list, k: int) -> bool:
++    """Hard Elliott rules on normalized points p[0..k+1] (p[k+1] = leg in progress).
++    Magnitude rules only bind completed points; overshoot rules bind all."""
++    m = len(p)
++    w = [abs(p[i] - p[i - 1]) for i in range(1, m)]
++    if m > 2 and not p[2] > p[0]:                      # W2 can't retrace all of W1
++        return False
++    if k >= 3 and not p[3] > p[1]:                     # W3 must exceed the W1 end
++        return False
++    if m > 4 and not p[4] > p[1]:                      # W4 can't overlap W1
++        return False
++    if m > 5 and w[2] < w[0] and w[2] < w[4]:          # W3 can't be the shortest
++        return False
++    if k >= 5 and not p[5] > p[3]:                     # no truncated fifths
++        return False
++    if m > 6 and not p[6] > p[0]:                      # A can't erase the whole impulse
++        return False
++    if m > 7 and not p[7] < p[5]:                      # regular B stays below the 5 extreme
++        return False
++    if m > 8 and not p[8] > p[0]:
++        return False
++    return True
++
++
++def _ratios(p: list, k: int) -> dict:
++    """Fibonacci ratios of COMPLETED legs only."""
++    w = [abs(p[i] - p[i - 1]) for i in range(1, len(p))]
++    r = {}
++    if k >= 2: r["W2/W1"] = w[1] / w[0]
++    if k >= 3: r["W3/W1"] = w[2] / w[0]
++    if k >= 4: r["W4/W3"] = w[3] / w[2]
++    if k >= 5: r["W5/W1"] = w[4] / w[0]
++    if k >= 6: r["A/(0-5)"] = (p[5] - p[6]) / (p[5] - p[0])
++    if k >= 7: r["B/A"] = (p[7] - p[6]) / (p[5] - p[6])
++    return r
++
++
++def _candidates(df: pd.DataFrame, thr: float):
++    high, low, close = df["high"].values, df["low"].values, df["close"].values
++    pivots, tent = _zigzag(high, low, thr)
++    if tent is None or len(pivots) < 1:
++        return []
++    ma200 = pd.Series(close).rolling(200, min_periods=150).mean().values[-1]
++    out = []
++    n_p = len(pivots)
++    for s in range(max(0, n_p - 8), n_p):
++        start = pivots[s]
++        d = -start[2]                        # a low starts an up-move, a high a down-move
++        seq = pivots[s:]
++        k = len(seq) - 1
++        q = [d * pp[1] for pp in seq]
++        e = d * tent[1]
++        pts = q + [e]
++        if not _valid(pts, k):
++            continue
++        ratios = _ratios(pts, k)
++        fib = sum(_fit(v, RATIO_TARGETS[name]) - BASELINE[name] for name, v in ratios.items())
++        nl = low if d == 1 else -high
++        sig = _start_significance(nl, start[0], d * start[1])
++        trend_term = 0.0
++        if k + 1 <= 5 and np.isfinite(ma200):
++            trend_term = TREND_WEIGHT if d * (close[-1] - ma200) > 0 else -TREND_WEIGHT
++        score = FIB_WEIGHT * fib + START_WEIGHT * (sig - 0.5) + trend_term
++        out.append(_Count(d=d, bars=[pp[0] for pp in seq], q=q, e=e, e_bar=tent[0],
++                          k=k, ratios=ratios, score=score, thr=thr))
++    return out
++
++
++# --------------------------------------------------------------------------------------
++# Targets / invalidation / plain-English note
++# --------------------------------------------------------------------------------------
++def _levels(c: _Count):
++    """[(name, normalized price)] Fibonacci levels for the wave in progress, plus
++    (normalized invalidation, reason)."""
++    q, stage = c.q, c.k + 1
++    w = [abs(q[i] - q[i - 1]) for i in range(1, len(q))]
++    if stage == 1:
++        return [], (q[0], "wave 1 can't fall back through its own start")
++    if stage == 2:
++        return ([(f"{r:.1%} ret. W1", q[1] - r * w[0]) for r in (0.382, 0.5, 0.618)],
++                (q[0], "wave 2 can't retrace all of wave 1"))
++    if stage == 3:
++        return ([(f"{r:g}×W1", q[2] + r * w[0]) for r in (1.0, 1.618, 2.618)],
++                (q[2], "wave 3 can't break the wave-2 extreme"))
++    if stage == 4:
++        return ([(f"{r:.1%} ret. W3", q[3] - r * w[2]) for r in (0.236, 0.382, 0.5)],
++                (q[1], "wave 4 can't overlap wave 1"))
++    if stage == 5:
++        lv = [(f"{r:g}×W1", q[4] + r * w[0]) for r in (0.618, 1.0)]
++        lv.append(("0.618×(0→3)", q[4] + 0.618 * (q[3] - q[0])))
++        return lv, (q[4], "wave 5 can't break the wave-4 extreme")
++    if stage == 6:   # A
++        full = q[5] - q[0]
++        return ([(f"{r:.1%} ret. 0→5", q[5] - r * full) for r in (0.382, 0.5, 0.618)],
++                (q[5], "beyond the wave-5 extreme the impulse is still extending"))
++    if stage == 7:   # B
++        a = q[5] - q[6]
++        return ([(f"{r:.1%} ret. A", q[6] + r * a) for r in (0.5, 0.618, 0.786)],
++                (q[5], "a regular B can't exceed the wave-5 extreme"))
++    # stage 8: C
++    a = q[5] - q[6]
++    return ([(f"{r:g}×A", q[7] - r * a) for r in (1.0, 1.618)],
++            (q[7], "C reversing past the B extreme ends the correction"))
++
++
++_STAGE_TEXT = {
++    1: ("wave 1", "an early, still-unconfirmed new move"),
++    2: ("wave 2", "the first pullback after wave 1"),
++    3: ("wave 3", "usually the longest, strongest leg"),
++    4: ("wave 4", "a pullback before the final push"),
++    5: ("wave 5", "the final push"),
++    6: ("wave A", "the first leg of the correction after a finished 5-wave move"),
++    7: ("wave B", "a counter-move inside the correction"),
++    8: ("wave C", "the last leg of the correction"),
++}
++
++
++def _fill(res: WaveResult, c: _Count, alt: Optional[_Count], df: pd.DataFrame) -> WaveResult:
++    d = c.d
++    real = lambda v: float(d * v)          # normalized -> actual price
++    dates = df["date"].tolist()
++    close = df["close"].values
++    stage_n = c.k + 1
++    res.stage = STAGE_OF[stage_n]
++    res.trend = "up" if d == 1 else "down"
++    res.score = float(c.score)
++    res.swing_pct = float(c.thr)
++    res.ratios = {name: round(float(v), 3) for name, v in c.ratios.items()}
++    res.points = [(dates[b], real(v), LABELS[i]) for i, (b, v) in enumerate(zip(c.bars, c.q))]
++    res.leg_end = (dates[c.e_bar], real(c.e), LABELS[stage_n] + "?")
++
++    n_rat = len(c.ratios)
++    if c.score >= HIGH_SCORE and n_rat >= 2:
++        res.confidence = "High"
++    elif c.score >= MEDIUM_SCORE and n_rat >= 1:
++        res.confidence = "Medium"
++    else:
++        res.confidence = "Low"
++
++    arrow = "↑" if d == 1 else "↓"
++    res.label = f"Wave {res.stage} {arrow}"
++
++    levels, (inv_n, why) = _levels(c)
++    res.targets = [(name, real(v)) for name, v in levels]
++    res.invalidation = real(inv_n)
++    res.invalidation_reason = why
++    now = float(d * close[-1])
++    # Direction the leg in progress travels (normalized): impulse legs 1/3/5 and B go with d.
++    leg_dir = 1 if stage_n in (1, 3, 5, 7) else -1
++    ahead = [(name, v) for name, v in levels if leg_dir * (v - now) > 0]
++    if ahead:
++        name, v = min(ahead, key=lambda t: abs(t[1] - now))
++        res.next_level = (name, real(v))
++
++    if stage_n == 5:
++        w1 = c.q[1] - c.q[0]
++        res.maybe_ending = bool((c.e - c.q[4]) >= 0.618 * w1)
++
++    fmt = lambda v: f"{v:,.2f}"
++    move = "an up-move" if d == 1 else "a down-move"
++    wname, wdesc = _STAGE_TEXT[stage_n]
++    note = f"Likely in {wname} of {move} ({wdesc})."
++    if res.next_level:
++        note += f" Next Fibonacci level: {fmt(res.next_level[1])} ({res.next_level[0]})."
++    if res.maybe_ending:
++        note += " Wave 5 has already reached its minimum target — the move may be near completion."
++    against = "below" if res.invalidation < close[-1] else "above"
++    note += f" The count fails {against} {fmt(res.invalidation)} ({why})."
++    if res.confidence == "Low":
++        note += " Low confidence: the legs don't match Fibonacci proportions better than chance."
++    res.note = note
++    if alt is not None:
++        res.alternate = f"Wave {STAGE_OF[alt.k + 1]} {'↑' if alt.d == 1 else '↓'} (score {alt.score:.2f})"
++    return res
++
++
++# --------------------------------------------------------------------------------------
++# Main entry point
++# --------------------------------------------------------------------------------------
++def analyze_waves(prices, symbol: Optional[str] = None, sensitivity: str = "auto") -> WaveResult:
++    """Best Elliott Wave count for the price history (≥ ~150 daily bars; 2 years is ideal)."""
++    res = WaveResult(symbol=symbol)
++    try:
++        df = normalize_prices(prices)
++    except Exception as e:  # noqa: BLE001
++        res.note = f"Couldn't read prices: {e}"
++        return res
++    if len(df) < MIN_BARS:
++        res.note = f"Need at least {MIN_BARS} daily bars (have {len(df)})."
++        return res
++    res.last_close = float(df["close"].iloc[-1])
++    res.last_date = df["date"].iloc[-1]
++
++    atr = _atr_pct(df)
++    mults = AUTO_ATR_MULTIPLES if sensitivity == "auto" else (SENSITIVITY.get(sensitivity, 4.5),)
++    cands, zz_by_thr = [], {}
++    for m in mults:
++        thr = max(0.03, m * atr)
++        cs = _candidates(df, thr)
++        cands += cs
++        zz_by_thr[thr] = thr
++    if not cands:
++        res.note = "No valid Elliott count — price is choppy or the swings break the wave rules."
++        return res
++
++    cands.sort(key=lambda c: (c.score, c.k), reverse=True)
++    best = cands[0]
++    alt = next((c for c in cands[1:] if (c.k, c.d) != (best.k, best.d)), None)
++    _fill(res, best, alt, df)
++
++    pivots, tent = _zigzag(df["high"].values, df["low"].values, best.thr)
++    dates = df["date"].tolist()
++    res.zigzag = [(dates[b], float(p)) for b, p, _ in pivots] + (
++        [(dates[tent[0]], float(tent[1]))] if tent else [])
++    return res
++
++
++def analyze_many(price_frames: dict, sensitivity: str = "auto") -> dict:
++    """{symbol: prices} -> {symbol: WaveResult}. Never raises."""
++    out = {}
++    for sym, px in (price_frames or {}).items():
++        try:
++            out[sym] = analyze_waves(px, symbol=sym, sensitivity=sensitivity)
++        except Exception as e:  # noqa: BLE001
++            out[sym] = WaveResult(symbol=sym, note=f"analysis failed: {e}")
++    return out
++
++
++# --------------------------------------------------------------------------------------
++# Chart
++# --------------------------------------------------------------------------------------
++def wave_chart(prices, res: WaveResult, min_bars: int = 150, height: int = 520):
++    """Plotly figure: candles, swing points, the labelled count, Fibonacci levels
++    for the wave in progress and the invalidation line."""
++    import plotly.graph_objects as go
++
++    df = normalize_prices(prices)
++    if res.points:
++        first = res.points[0][0]
++        i0 = int(df.index[df["date"] >= first][0])
++        pad = max(20, (len(df) - i0) // 6)
++        start = max(0, min(i0 - pad, len(df) - min_bars))
++    else:
++        start = max(0, len(df) - 250)
++    view = df.iloc[start:]
++    x0 = view["date"].iloc[0]
++
++    fig = go.Figure()
++    fig.add_trace(go.Candlestick(x=view["date"], open=view["open"], high=view["high"],
++                                 low=view["low"], close=view["close"], name="Price",
++                                 increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
++                                 showlegend=False))
++    zz = [(t, p) for t, p in res.zigzag if t >= x0]
++    if zz:
++        fig.add_trace(go.Scatter(x=[t for t, _ in zz], y=[p for _, p in zz], mode="lines",
++                                 line=dict(color="rgba(128,128,128,0.55)", width=1),
++                                 name="Swings", hoverinfo="skip"))
++    if res.points:
++        pts = list(res.points) + ([res.leg_end] if res.leg_end else [])
++        fig.add_trace(go.Scatter(
++            x=[p[0] for p in pts], y=[p[1] for p in pts], mode="lines+markers+text",
++            text=[p[2] for p in pts], textposition="top center",
++            textfont=dict(size=15, color="#f5a623"),
++            line=dict(color="#f5a623", width=2.5), marker=dict(size=8),
++            name="Wave count"))
++    for name, price in res.targets:
++        fig.add_hline(y=price, line=dict(color="#4a90e2", width=1, dash="dot"),
++                      annotation_text=f"{name}  {price:,.2f}", annotation_position="right")
++    if res.invalidation is not None:
++        fig.add_hline(y=res.invalidation, line=dict(color="#d0021b", width=1.5, dash="dash"),
++                      annotation_text=f"invalidation  {res.invalidation:,.2f}",
++                      annotation_position="right")
++    title = f"{res.symbol or ''}  ·  {res.label}"
++    if res.confidence:
++        title += f"  ·  {res.confidence} confidence"
++    fig.update_layout(title=title, height=height, xaxis_rangeslider_visible=False,
++                      margin=dict(l=10, r=150, t=50, b=10),
++                      legend=dict(orientation="h", y=1.02, x=0))
++    return fig
++
++
++# --------------------------------------------------------------------------------------
++# Calibration against random walks (run: python fib_waves.py)
++# --------------------------------------------------------------------------------------
++def _random_walk(n: int = 504, seed: int = 0, vol: float = 0.02) -> pd.DataFrame:
++    rng = np.random.default_rng(seed)
++    r = rng.normal(0, vol, n)
++    close = 100 * np.exp(np.cumsum(r))
++    spread = np.abs(rng.normal(0, vol * 0.6, n))
++    high = close * (1 + spread)
++    low = close * (1 - np.abs(rng.normal(0, vol * 0.6, n)))
++    open_ = np.r_[close[0], close[:-1]]
++    return pd.DataFrame({"date": pd.bdate_range("2020-01-01", periods=n), "open": open_,
++                         "high": np.maximum(high, np.maximum(open_, close)),
++                         "low": np.minimum(low, np.minimum(open_, close)), "close": close})
++
++
++def calibrate(n: int = 1500) -> dict:
++    """Measure per-ratio random-walk fits and the null score distribution."""
++    fits = {k: [] for k in RATIO_TARGETS}
++    scores = []
++    for i in range(n):
++        r = analyze_waves(_random_walk(seed=i, vol=0.012 + 0.02 * (i % 5) / 4))
++        if r.stage is None:
++            continue
++        scores.append(r.score)
++        for name, v in r.ratios.items():
++            fits[name].append(_fit(v, RATIO_TARGETS[name]))
++    s = np.array(scores)
++    return {"fit_mean": {k: round(float(np.mean(v)), 3) for k, v in fits.items() if v},
++            "score_p67": round(float(np.quantile(s, 0.67)), 3),
++            "score_p90": round(float(np.quantile(s, 0.90)), 3),
++            "counted": len(s) / n}
++
++
++if __name__ == "__main__":
++    print(calibrate())
+diff --git a/requirements.txt b/requirements.txt
+index c500ed1..5de290a 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -2,3 +2,4 @@ streamlit>=1.32
+ pandas>=2.1
+ requests>=2.31
+ yfinance>=0.2.40
++plotly>=5.18
+diff --git a/yahoo_fallback.py b/yahoo_fallback.py
+index 0e27c25..f15321a 100644
+--- a/yahoo_fallback.py
++++ b/yahoo_fallback.py
+@@ -145,6 +145,46 @@ def fetch_momentum_yahoo(symbols: list[str]) -> dict[str, dict]:
+     return out
+ 
+ 
++# ---------------------------------------------------------------------------
++# Daily OHLC history — feeds the Elliott Wave / Fibonacci stage engine
++# ---------------------------------------------------------------------------
++def fetch_price_history_yahoo(symbols: list[str], period: str = "2y") -> dict:
++    """Return {symbol: DataFrame[date, open, high, low, close]} of split/dividend-
++    adjusted daily bars. One bulk download; tickers that fail are simply absent;
++    never raises."""
++    if not HAVE_YF or not symbols:
++        return {}
++    try:
++        hist = yf.download(
++            tickers=" ".join(symbols), period=period, interval="1d",
++            group_by="ticker", auto_adjust=True, progress=False, threads=True,
++        )
++    except Exception as e:  # noqa: BLE001
++        logger.warning("yahoo history download failed: %s", str(e)[:160])
++        return {}
++    if hist is None or len(hist) == 0:
++        return {}
++
++    out: dict = {}
++    for sym in symbols:
++        try:
++            try:
++                df = hist[sym]
++            except (KeyError, TypeError):
++                if len(symbols) != 1:
++                    continue
++                df = hist
++            df = df[["Open", "High", "Low", "Close"]].dropna(subset=["Close"])
++            if len(df) < 150:
++                continue
++            df = df.reset_index()
++            df.columns = ["date", "open", "high", "low", "close"]
++            out[sym] = df
++        except Exception:  # noqa: BLE001
++            continue
++    return out
++
++
+ # ---------------------------------------------------------------------------
+ # Fundamentals — statement-based (NOT .info)
+ # ---------------------------------------------------------------------------
+-- 
+2.43.0
+

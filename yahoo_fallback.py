@@ -146,6 +146,46 @@ def fetch_momentum_yahoo(symbols: list[str]) -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# Daily OHLC history — feeds the Elliott Wave / Fibonacci stage engine
+# ---------------------------------------------------------------------------
+def fetch_price_history_yahoo(symbols: list[str], period: str = "2y") -> dict:
+    """Return {symbol: DataFrame[date, open, high, low, close]} of split/dividend-
+    adjusted daily bars. One bulk download; tickers that fail are simply absent;
+    never raises."""
+    if not HAVE_YF or not symbols:
+        return {}
+    try:
+        hist = yf.download(
+            tickers=" ".join(symbols), period=period, interval="1d",
+            group_by="ticker", auto_adjust=True, progress=False, threads=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("yahoo history download failed: %s", str(e)[:160])
+        return {}
+    if hist is None or len(hist) == 0:
+        return {}
+
+    out: dict = {}
+    for sym in symbols:
+        try:
+            try:
+                df = hist[sym]
+            except (KeyError, TypeError):
+                if len(symbols) != 1:
+                    continue
+                df = hist
+            df = df[["Open", "High", "Low", "Close"]].dropna(subset=["Close"])
+            if len(df) < 150:
+                continue
+            df = df.reset_index()
+            df.columns = ["date", "open", "high", "low", "close"]
+            out[sym] = df
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Fundamentals — statement-based (NOT .info)
 # ---------------------------------------------------------------------------
 # Yahoo's quoteSummary endpoint (behind ``Ticker.info``) requires cookie/crumb

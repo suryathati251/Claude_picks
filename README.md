@@ -24,6 +24,14 @@ Open the deployed URL in your browser each morning — fresh prices on every pag
   average, 52-week range position, RSI(14), and watchlist breadth, each normalized and averaged, with
   a zone-based deployment stance (accumulate into extreme fear · plain DCA in neutral · patience with
   extra cash in extreme greed). Timing caveats included; not investment advice.
+- **🌊 Elliott Wave / Fibonacci stage** (`fib_waves.py`) — **Wave**, **Wave conf**, **Next Fib** and
+  **Wave invalid** columns on the watchlist: which leg of a 5-wave move (1–5, ↑/↓) or of the A-B-C
+  correction each stock is in, how well the legs fit the textbook Fibonacci ratios (confidence
+  calibrated on random-walk prices — only ~1 in 10 noise counts reaches High), the nearest Fibonacci
+  target ahead, and the price that would break the count. A **🌊 chart** expander under the table draws
+  the count, targets and invalidation line for any ticker; the Lookup tab shows the read too. Free
+  Yahoo daily bars (2y), recounted once a day — **zero FMP quota**. Elliott counts are subjective:
+  context, not a trade signal. Run `python fib_waves.py` to re-check the calibration.
 - **Tab navigation** — 📊 Watchlist · 🚀 10x Radar · 🎯 Market & Entry · 🔎 Lookup. The radar's
   market-scan only loads when its tab is open, so the default view stays fast.
 - **Radar context columns** — **P/S** (market cap ÷ TTM revenue: how much of the explosion is already

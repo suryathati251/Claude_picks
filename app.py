@@ -47,7 +47,7 @@ import importlib as _importlib
 import sys as _sys
 for _m in ("fundamentals", "yahoo_fallback", "market_risk",
            "watchlist_data", "watchlist_growth", "tenx_universe",
-           "tenx_radar", "entry_meter", "insider", "options_income"):
+           "tenx_radar", "entry_meter", "insider", "options_income", "fib_waves"):
     if _m in _sys.modules:
         try:
             _importlib.reload(_sys.modules[_m])
@@ -84,7 +84,9 @@ from fundamentals import (
 )
 from yahoo_fallback import (
     fetch_quotes_yahoo, fetch_fundamentals_yahoo, fetch_momentum_yahoo, HAVE_YF,
+    fetch_price_history_yahoo,
 )
+from fib_waves import analyze_waves, wave_chart
 from tenx_universe import SCAN_SYMBOLS, SCAN_NAMES, SCAN_SECTORS
 from tenx_radar import (fetch_quarterly_yahoo, compute_tenx_metrics, tenx_score,
                         fetch_next_earnings, fetch_last_earnings_surprise)
@@ -141,6 +143,7 @@ PUTS_MAX_TICKERS = 12                # options chains fetched per load (~2-3 cal
 INSIDER_TTL = 14 * 24 * 60 * 60      # insider summaries change slowly
 INSIDER_BUDGET = int(os.getenv("INSIDER_BUDGET", "8"))   # FMP calls/load (watchlist only)
 HISTORY_RETAIN_DAYS = 180            # daily score snapshots kept on disk
+WAVE_TTL = 24 * 60 * 60              # Elliott Wave / Fib stages: daily bars -> recount daily
 
 
 def get_api_key() -> Optional[str]:
@@ -204,6 +207,8 @@ def insider_store(): return PersistentStore(os.path.join(_cache_dir(), "insider.
 def history_store(): return PersistentStore(os.path.join(_cache_dir(), "history.json"))
 @st.cache_resource
 def options_store(): return PersistentStore(os.path.join(_cache_dir(), "options.json"))
+@st.cache_resource
+def wave_store(): return PersistentStore(os.path.join(_cache_dir(), "waves.json"))
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +479,62 @@ def fetch_momentum(symbols, force):
             out[sym] = val
         store.flush()
     return out
+
+
+@st.cache_data(ttl=WAVE_TTL, show_spinner=False)
+def cached_price_history(symbol: str):
+    """2y daily OHLC for ONE ticker (wave chart / Lookup). Free Yahoo, cached a day."""
+    return fetch_price_history_yahoo([symbol]).get(symbol)
+
+
+def fetch_waves(symbols, force):
+    """Disk-cached Elliott Wave / Fibonacci stage per ticker (free Yahoo history,
+    zero FMP calls). Returns {symbol: summary dict | None}. Recounts daily."""
+    if not HAVE_YF:
+        return {}
+    store = wave_store()
+    now = time.time()
+    out, need = {}, []
+    for s in symbols:
+        e = store.get(s)
+        if _fresh(e, WAVE_TTL) and not force:
+            out[s] = e["data"]
+        else:
+            need.append(s)
+    if need:
+        hist = {}
+        for i in range(0, len(need), 60):          # bulk downloads in chunks
+            try:
+                hist.update(fetch_price_history_yahoo(need[i:i + 60]))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("wave history fetch failed: %s", str(e)[:120])
+        for sym in need:
+            px = hist.get(sym)
+            if px is None:
+                continue
+            try:
+                res = analyze_waves(px, symbol=sym).summary()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("wave analysis %s failed: %s", sym, str(e)[:120]); res = None
+            store.set(sym, {"data": res, "ts": now})
+            out[sym] = res
+        if hist:
+            store.flush()
+    return out
+
+
+WAVE_CONF_ICON = {"High": "🟢 High", "Medium": "🟡 Med", "Low": "⚪ Low"}
+
+
+def wave_cells(w):
+    """(Wave, Wave conf, Next Fib, Invalid) display cells from a wave summary."""
+    if not w or not w.get("stage"):
+        return "—", "", "", None
+    arrow = "↑" if w.get("trend") == "up" else "↓"
+    stage = f"{w['stage']} {arrow}" + (" ⏳" if w.get("maybe_ending") else "")
+    nxt = w.get("next_level")
+    nxt_s = f"{nxt[1]:,.2f} · {nxt[0]}" if nxt else ""
+    return stage, WAVE_CONF_ICON.get(w.get("confidence"), ""), nxt_s, w.get("invalidation")
 
 
 def fetch_scan_quotes(api_key, symbols):
@@ -1076,6 +1137,10 @@ if nav == NAV_WATCH:
         st.caption("ℹ️ Insider data isn't included in this FMP plan — the **Insider** column stays "
                    "blank and no quota is spent retrying.")
 
+    # Elliott Wave / Fibonacci stage (free Yahoo daily bars, cached a day, zero FMP calls).
+    with st.spinner("Counting Elliott waves (daily; cached)…"):
+        wave_data = fetch_waves(SYMBOLS, force_funds)
+
 
     def render_display(row):
         """Display row: NUMERIC cells stay numeric (header-click sorting works);
@@ -1084,6 +1149,7 @@ if nav == NAV_WATCH:
         target_str = fmt_price(row["Target"], row["Currency"]) if pd.notna(row["Target"]) else "—"
         if pd.notna(row["Target"]) and not row["Target OK"]:
             target_str += " ⚠️"
+        w_stage, w_conf, w_next, w_inv = wave_cells(wave_data.get(row["Ticker"]))
         return pd.Series({
             "Ticker": f"{row['Ticker']}  ({row['Region']})",
             "Name": row["Name"],
@@ -1108,6 +1174,10 @@ if nav == NAV_WATCH:
             "Insider": insider_display(insider_data.get(row["Ticker"]), row["52w Pos %"]),
             "12-1m": row["Mom 12-1 %"],
             "52w": row["52w Pos %"],
+            "Wave": w_stage,
+            "Wave conf": w_conf,
+            "Next Fib": w_next,
+            "Wave invalid": w_inv,
             "Mkt Cap": row["Mkt Cap"],
             "Target": target_str,
             "Upside %": row["Upside %"],
@@ -1144,6 +1214,16 @@ if nav == NAV_WATCH:
             "EV/EBIT": ncol("%.1f", "Blank when EBIT ≤ 0 (not meaningful)."),
             "D/E": ncol("%.2f"),
             "12-1m": ncol("%+.0f%%"), "52w": ncol("%.0f%%"),
+            "Wave": st.column_config.TextColumn(
+                help="Elliott Wave stage the price is in now: 1–5 = the 5-wave impulse, A/B/C = the correction "
+                     "after it. The arrow is the impulse direction (↑ up-move, ↓ down-move) — so 'B ↑' is a "
+                     "correction of an up-move. ⏳ = wave 5 already hit its minimum Fibonacci target."),
+            "Wave conf": st.column_config.TextColumn(
+                help="How well the legs fit Fibonacci ratios vs. chance. On random prices only ~1 in 10 "
+                     "counts reaches High. Wave 1–2 counts are always Low (no finished legs to measure)."),
+            "Next Fib": st.column_config.TextColumn(
+                width="medium", help="Nearest Fibonacci target ahead of the price for the wave in progress."),
+            "Wave invalid": ncol("%.2f", "The count is wrong if price crosses this level."),
             "Mkt Cap": st.column_config.NumberColumn(
                 format="compact", help="Native currency for non-US listings."),
             "Upside %": ncol("%+.1f%%"),
@@ -1157,6 +1237,35 @@ if nav == NAV_WATCH:
                "(🟢 net buying · 🟣 cluster buying near the 52-week low — the classic contrarian tell; "
                "display-only, doesn't move the Score). "
                "Full list under **ℹ️ How the score works & caveats** below.")
+
+    with st.expander("🌊 Elliott Wave / Fibonacci stage chart", expanded=False):
+        st.caption("Pick a ticker to see its wave count, the Fibonacci levels for the wave in progress, "
+                   "and the price that would invalidate the count. Elliott counts are subjective — "
+                   "use this as context, not a trade signal.")
+        wave_pick = st.selectbox("Ticker", options=list(view["Ticker"]), index=None,
+                                 placeholder="Choose a ticker…", key="wave_pick")
+        if wave_pick:
+            if not HAVE_YF:
+                st.warning("Install `yfinance` to enable wave charts.")
+            else:
+                with st.spinner(f"Loading {wave_pick} history…"):
+                    _px = cached_price_history(wave_pick)
+                if _px is None:
+                    st.info(f"No usable price history for {wave_pick} right now (Yahoo) — try again later.")
+                else:
+                    _wr = analyze_waves(_px, symbol=wave_pick)
+                    if _wr.stage is None:
+                        st.info(_wr.note)
+                    else:
+                        try:
+                            st.plotly_chart(wave_chart(_px, _wr), key="wave_chart")
+                        except ImportError:
+                            st.warning("Add `plotly` to requirements.txt to draw the chart.")
+                        st.markdown(f"**{_wr.label} · {_wr.confidence} confidence.** {_wr.note}")
+                        _bits = [f"{k} = {v:.3f}" for k, v in _wr.ratios.items()]
+                        if _bits:
+                            st.caption("Measured ratios: " + " · ".join(_bits)
+                                       + (f" · Alternate count: {_wr.alternate}" if _wr.alternate else ""))
 
     st.divider()
     csv = view.drop(columns=["Target OK"], errors="ignore").to_csv(index=False).encode()
@@ -1694,6 +1803,13 @@ elif nav == NAV_LOOKUP:
                         st.caption(f"**🚀 10x Radar:** {t_sc:.0f}/100 · Rev YoY (Q) "
                                    f"{tqm['q_rev_yoy']*100:+.0f}%"
                                    + (" · " + " · ".join(t_tags) if t_tags else ""))
+            # Elliott Wave read for the looked-up ticker (1 free Yahoo call, cached a day).
+            if HAVE_YF:
+                _lpx = cached_price_history(query)
+                if _lpx is not None:
+                    _lw = analyze_waves(_lpx, symbol=query)
+                    if _lw.stage is not None:
+                        st.caption(f"**🌊 Wave:** {_lw.label} · {_lw.confidence} confidence — {_lw.note}")
             if is_member:
                 thesis = next((it["thesis"] for it in WATCHLIST if it["ticker"] == query), "")
                 if thesis:
