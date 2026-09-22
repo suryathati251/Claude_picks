@@ -1,0 +1,199 @@
+From c059643ab0b8fb485ea0e855f84f8bbfdf360ede Mon Sep 17 00:00:00 2001
+From: Surya <noreply@example.com>
+Date: Tue, 22 Sep 2026 16:02:10 +0000
+Subject: [PATCH] Add Wave signal column (Strong Buy / Buy / Hold / Sell from
+ the Fib wave count)
+
+---
+ README.md    |  4 ++-
+ app.py       | 22 ++++++++++++++---
+ fib_waves.py | 69 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 91 insertions(+), 4 deletions(-)
+
+diff --git a/README.md b/README.md
+index 38c6ab5..7426e93 100644
+--- a/README.md
++++ b/README.md
+@@ -28,7 +28,9 @@ Open the deployed URL in your browser each morning — fresh prices on every pag
+   **Wave invalid** columns on the watchlist: which leg of a 5-wave move (1–5, ↑/↓) or of the A-B-C
+   correction each stock is in, how well the legs fit the textbook Fibonacci ratios (confidence
+   calibrated on random-walk prices — only ~1 in 10 noise counts reaches High), the nearest Fibonacci
+-  target ahead, and the price that would break the count. A **🌊 chart** expander under the table draws
++  target ahead, and the price that would break the count. A **Wave signal** column turns the count into
++  🟢🟢 Strong Buy / 🟢 Buy / ⚪ Hold / 🔴 Sell (buy late wave 2/4/C pullbacks of an up-move in their Fibonacci
++  buy zone; sell mature wave 5, A/B, and down-trend legs; Strong Buy needs a High-confidence count). A **🌊 chart** expander under the table draws
+   the count, targets and invalidation line for any ticker; the Lookup tab shows the read too. Free
+   Yahoo daily bars (2y), recounted once a day — **zero FMP quota**. Elliott counts are subjective:
+   context, not a trade signal. Run `python fib_waves.py` to re-check the calibration.
+diff --git a/app.py b/app.py
+index 152ad06..0a89d35 100644
+--- a/app.py
++++ b/app.py
+@@ -208,7 +208,7 @@ def history_store(): return PersistentStore(os.path.join(_cache_dir(), "history.
+ @st.cache_resource
+ def options_store(): return PersistentStore(os.path.join(_cache_dir(), "options.json"))
+ @st.cache_resource
+-def wave_store(): return PersistentStore(os.path.join(_cache_dir(), "waves.json"))
++def wave_store(): return PersistentStore(os.path.join(_cache_dir(), "waves_v2.json"))  # v2 adds signals
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -526,6 +526,13 @@ def fetch_waves(symbols, force):
+ WAVE_CONF_ICON = {"High": "🟢 High", "Medium": "🟡 Med", "Low": "⚪ Low"}
+ 
+ 
++WAVE_SIGNAL_ICON = {"Strong Buy": "🟢🟢 Strong Buy", "Buy": "🟢 Buy", "Hold": "⚪ Hold", "Sell": "🔴 Sell"}
++
++
++def wave_signal_cell(w):
++    return WAVE_SIGNAL_ICON.get((w or {}).get("signal"), "—")
++
++
+ def wave_cells(w):
+     """(Wave, Wave conf, Next Fib, Invalid) display cells from a wave summary."""
+     if not w or not w.get("stage"):
+@@ -1158,6 +1165,7 @@ if nav == NAV_WATCH:
+             "Cov": f"{int(row['Cov'])}/{int(row['CovN'])}" if pd.notna(row["Cov"]) else "—",
+             "V": row["V"], "Q": row["Q"], "G": row["G"], "M": row["M"], "S": row["S"],
+             "Moat": row["Moat"],
++            "Wave signal": wave_signal_cell(wave_data.get(row["Ticker"])),
+             "Wave": w_stage,
+             "Wave conf": w_conf,
+             "Next Fib": w_next,
+@@ -1214,6 +1222,11 @@ if nav == NAV_WATCH:
+             "EV/EBIT": ncol("%.1f", "Blank when EBIT ≤ 0 (not meaningful)."),
+             "D/E": ncol("%.2f"),
+             "12-1m": ncol("%+.0f%%"), "52w": ncol("%.0f%%"),
++            "Wave signal": st.column_config.TextColumn(
++                help="Rule-based read from the wave count ONLY (ignores fundamentals): Strong Buy / Buy = "
++                     "late wave 2, 4 or C pullback of an up-move in its Fibonacci buy zone (Strong Buy needs a "
++                     "High-confidence count); Sell = mature wave 5, wave A/B, or a down-trend leg; Hold = "
++                     "everything else or low confidence. Not investment advice — pair it with the Score."),
+             "Wave": st.column_config.TextColumn(
+                 help="Elliott Wave stage the price is in now: 1–5 = the 5-wave impulse, A/B/C = the correction "
+                      "after it. The arrow is the impulse direction (↑ up-move, ↓ down-move) — so 'B ↑' is a "
+@@ -1261,7 +1274,9 @@ if nav == NAV_WATCH:
+                             st.plotly_chart(wave_chart(_px, _wr), key="wave_chart")
+                         except ImportError:
+                             st.warning("Add `plotly` to requirements.txt to draw the chart.")
+-                        st.markdown(f"**{_wr.label} · {_wr.confidence} confidence.** {_wr.note}")
++                        st.markdown(f"**{_wr.label} · {_wr.confidence} confidence · "
++                                    f"Wave signal: {WAVE_SIGNAL_ICON.get(_wr.signal, '—')}** "
++                                    f"({_wr.signal_reason}). {_wr.note}")
+                         _bits = [f"{k} = {v:.3f}" for k, v in _wr.ratios.items()]
+                         if _bits:
+                             st.caption("Measured ratios: " + " · ".join(_bits)
+@@ -1809,7 +1824,8 @@ elif nav == NAV_LOOKUP:
+                 if _lpx is not None:
+                     _lw = analyze_waves(_lpx, symbol=query)
+                     if _lw.stage is not None:
+-                        st.caption(f"**🌊 Wave:** {_lw.label} · {_lw.confidence} confidence — {_lw.note}")
++                        st.caption(f"**🌊 Wave:** {_lw.label} · {_lw.confidence} confidence · "
++                                   f"{WAVE_SIGNAL_ICON.get(_lw.signal, '—')} ({_lw.signal_reason}) — {_lw.note}")
+             if is_member:
+                 thesis = next((it["thesis"] for it in WATCHLIST if it["ticker"] == query), "")
+                 if thesis:
+diff --git a/fib_waves.py b/fib_waves.py
+index 5157cd1..5335ae0 100644
+--- a/fib_waves.py
++++ b/fib_waves.py
+@@ -97,6 +97,8 @@ class WaveResult:
+     zigzag: list = field(default_factory=list)   # [(date, price)] every swing point
+     swing_pct: float = 0.0
+     maybe_ending: bool = False
++    signal: str = ""                  # "Strong Buy" / "Buy" / "Hold" / "Sell"
++    signal_reason: str = ""
+     alternate: str = ""
+     last_close: float = float("nan")
+     last_date: Any = None
+@@ -126,6 +128,7 @@ class WaveResult:
+             "invalidation": self.invalidation, "invalidation_reason": self.invalidation_reason,
+             "ratios": self.ratios, "maybe_ending": self.maybe_ending,
+             "alternate": self.alternate, "last_close": _safe(self.last_close),
++            "signal": self.signal, "signal_reason": self.signal_reason,
+         }
+ 
+ 
+@@ -374,6 +377,71 @@ _STAGE_TEXT = {
+ }
+ 
+ 
++# --------------------------------------------------------------------------------------
++# Rule-based signal from the wave count alone
++# --------------------------------------------------------------------------------------
++BUY_ZONE = {2: 0.5, 4: 0.236, 8: 0.618}   # pullback depth that puts waves 2 / 4 / C in the buy zone
++
++
++def _signal(c: _Count, res: WaveResult, now: float) -> tuple:
++    """Map the count to Strong Buy / Buy / Hold / Sell.
++
++    Buy the END of pullbacks that precede an up-leg (late wave 2, 4 or C of an
++    up-move), avoid chasing mature moves (late wave 5, A, B), and treat
++    down-trend impulse legs as Sell. Medium+ confidence is required for any
++    Buy/Sell except wave 2, which can never score above Low (no finished leg
++    to measure) and is therefore capped at Buy. ``now`` is the normalized close.
++    """
++    q, stage, conf = c.q, c.k + 1, res.confidence
++    up = c.d == 1
++    solid = conf in ("High", "Medium")
++
++    def depth():
++        if stage == 2:
++            return (q[1] - now) / (q[1] - q[0])
++        if stage == 4:
++            return (q[3] - now) / (q[3] - q[2])
++        return (q[7] - now) / (q[5] - q[6])        # stage 8 (C) vs the length of A
++
++    if up:
++        if stage in (2, 4, 8):
++            name = {2: "wave 2", 4: "wave 4", 8: "wave C"}[stage]
++            dp, zone = depth(), BUY_ZONE[stage]
++            if dp < zone:
++                return "Hold", f"{name} pullback only {dp:.0%} deep — buy zone starts at {zone:.1%}"
++            if stage == 2:
++                return "Buy", (f"late wave 2 ({dp:.0%} retracement) ahead of a potential wave 3 — "
++                               "unconfirmed count, keep the stop at the invalidation price")
++            if conf == "High":
++                return "Strong Buy", f"late {name} in the buy zone ({dp:.0%}) with a high-confidence count"
++            if solid:
++                return "Buy", f"late {name} in the buy zone ({dp:.0%})"
++            return "Hold", f"{name} in the buy zone but the count is low-confidence"
++        if stage == 3:
++            if solid and (now - q[2]) < (q[1] - q[0]):
++                return "Buy", "early wave 3 — still below the 1×W1 target"
++            return "Hold", "wave 3 already well underway — avoid chasing"
++        if stage == 5:
++            if res.maybe_ending and solid:
++                return "Sell", "wave 5 has reached its minimum target — the move is mature"
++            return "Hold", "wave 5 in progress — hold, don't add"
++        if stage in (6, 7):
++            if solid:
++                return "Sell", ("wave A — a correction has started" if stage == 6
++                                else "wave B rally inside a correction — a classic trap")
++            return "Hold", "correction under way, low-confidence count"
++        return "Hold", "wave 1 — too early to confirm a new up-move"
++
++    # Down-trend impulse (↓)
++    if stage == 5 and res.maybe_ending:
++        return "Hold", "down-move's wave 5 near its target — watch for a bottom, don't sell into it"
++    if stage in (1, 2, 3, 4, 5) and solid:
++        return "Sell", f"wave {stage} of a down-move"
++    if stage == 8 and solid:
++        return "Sell", "wave C rally inside a down-trend is ending"
++    return "Hold", "down-trend count is low-confidence or a counter-rally is under way"
++
++
+ def _fill(res: WaveResult, c: _Count, alt: Optional[_Count], df: pd.DataFrame) -> WaveResult:
+     d = c.d
+     real = lambda v: float(d * v)          # normalized -> actual price
+@@ -428,6 +496,7 @@ def _fill(res: WaveResult, c: _Count, alt: Optional[_Count], df: pd.DataFrame) -
+     if res.confidence == "Low":
+         note += " Low confidence: the legs don't match Fibonacci proportions better than chance."
+     res.note = note
++    res.signal, res.signal_reason = _signal(c, res, now)
+     if alt is not None:
+         res.alternate = f"Wave {STAGE_OF[alt.k + 1]} {'↑' if alt.d == 1 else '↓'} (score {alt.score:.2f})"
+     return res
+-- 
+2.43.0
+

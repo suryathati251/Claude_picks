@@ -208,7 +208,7 @@ def history_store(): return PersistentStore(os.path.join(_cache_dir(), "history.
 @st.cache_resource
 def options_store(): return PersistentStore(os.path.join(_cache_dir(), "options.json"))
 @st.cache_resource
-def wave_store(): return PersistentStore(os.path.join(_cache_dir(), "waves.json"))
+def wave_store(): return PersistentStore(os.path.join(_cache_dir(), "waves_v2.json"))  # v2 adds signals
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +524,13 @@ def fetch_waves(symbols, force):
 
 
 WAVE_CONF_ICON = {"High": "🟢 High", "Medium": "🟡 Med", "Low": "⚪ Low"}
+
+
+WAVE_SIGNAL_ICON = {"Strong Buy": "🟢🟢 Strong Buy", "Buy": "🟢 Buy", "Hold": "⚪ Hold", "Sell": "🔴 Sell"}
+
+
+def wave_signal_cell(w):
+    return WAVE_SIGNAL_ICON.get((w or {}).get("signal"), "—")
 
 
 def wave_cells(w):
@@ -1158,6 +1165,7 @@ if nav == NAV_WATCH:
             "Cov": f"{int(row['Cov'])}/{int(row['CovN'])}" if pd.notna(row["Cov"]) else "—",
             "V": row["V"], "Q": row["Q"], "G": row["G"], "M": row["M"], "S": row["S"],
             "Moat": row["Moat"],
+            "Wave signal": wave_signal_cell(wave_data.get(row["Ticker"])),
             "Wave": w_stage,
             "Wave conf": w_conf,
             "Next Fib": w_next,
@@ -1214,6 +1222,11 @@ if nav == NAV_WATCH:
             "EV/EBIT": ncol("%.1f", "Blank when EBIT ≤ 0 (not meaningful)."),
             "D/E": ncol("%.2f"),
             "12-1m": ncol("%+.0f%%"), "52w": ncol("%.0f%%"),
+            "Wave signal": st.column_config.TextColumn(
+                help="Rule-based read from the wave count ONLY (ignores fundamentals): Strong Buy / Buy = "
+                     "late wave 2, 4 or C pullback of an up-move in its Fibonacci buy zone (Strong Buy needs a "
+                     "High-confidence count); Sell = mature wave 5, wave A/B, or a down-trend leg; Hold = "
+                     "everything else or low confidence. Not investment advice — pair it with the Score."),
             "Wave": st.column_config.TextColumn(
                 help="Elliott Wave stage the price is in now: 1–5 = the 5-wave impulse, A/B/C = the correction "
                      "after it. The arrow is the impulse direction (↑ up-move, ↓ down-move) — so 'B ↑' is a "
@@ -1261,7 +1274,9 @@ if nav == NAV_WATCH:
                             st.plotly_chart(wave_chart(_px, _wr), key="wave_chart")
                         except ImportError:
                             st.warning("Add `plotly` to requirements.txt to draw the chart.")
-                        st.markdown(f"**{_wr.label} · {_wr.confidence} confidence.** {_wr.note}")
+                        st.markdown(f"**{_wr.label} · {_wr.confidence} confidence · "
+                                    f"Wave signal: {WAVE_SIGNAL_ICON.get(_wr.signal, '—')}** "
+                                    f"({_wr.signal_reason}). {_wr.note}")
                         _bits = [f"{k} = {v:.3f}" for k, v in _wr.ratios.items()]
                         if _bits:
                             st.caption("Measured ratios: " + " · ".join(_bits)
@@ -1809,7 +1824,8 @@ elif nav == NAV_LOOKUP:
                 if _lpx is not None:
                     _lw = analyze_waves(_lpx, symbol=query)
                     if _lw.stage is not None:
-                        st.caption(f"**🌊 Wave:** {_lw.label} · {_lw.confidence} confidence — {_lw.note}")
+                        st.caption(f"**🌊 Wave:** {_lw.label} · {_lw.confidence} confidence · "
+                                   f"{WAVE_SIGNAL_ICON.get(_lw.signal, '—')} ({_lw.signal_reason}) — {_lw.note}")
             if is_member:
                 thesis = next((it["thesis"] for it in WATCHLIST if it["ticker"] == query), "")
                 if thesis:

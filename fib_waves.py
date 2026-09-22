@@ -97,6 +97,8 @@ class WaveResult:
     zigzag: list = field(default_factory=list)   # [(date, price)] every swing point
     swing_pct: float = 0.0
     maybe_ending: bool = False
+    signal: str = ""                  # "Strong Buy" / "Buy" / "Hold" / "Sell"
+    signal_reason: str = ""
     alternate: str = ""
     last_close: float = float("nan")
     last_date: Any = None
@@ -126,6 +128,7 @@ class WaveResult:
             "invalidation": self.invalidation, "invalidation_reason": self.invalidation_reason,
             "ratios": self.ratios, "maybe_ending": self.maybe_ending,
             "alternate": self.alternate, "last_close": _safe(self.last_close),
+            "signal": self.signal, "signal_reason": self.signal_reason,
         }
 
 
@@ -374,6 +377,71 @@ _STAGE_TEXT = {
 }
 
 
+# --------------------------------------------------------------------------------------
+# Rule-based signal from the wave count alone
+# --------------------------------------------------------------------------------------
+BUY_ZONE = {2: 0.5, 4: 0.236, 8: 0.618}   # pullback depth that puts waves 2 / 4 / C in the buy zone
+
+
+def _signal(c: _Count, res: WaveResult, now: float) -> tuple:
+    """Map the count to Strong Buy / Buy / Hold / Sell.
+
+    Buy the END of pullbacks that precede an up-leg (late wave 2, 4 or C of an
+    up-move), avoid chasing mature moves (late wave 5, A, B), and treat
+    down-trend impulse legs as Sell. Medium+ confidence is required for any
+    Buy/Sell except wave 2, which can never score above Low (no finished leg
+    to measure) and is therefore capped at Buy. ``now`` is the normalized close.
+    """
+    q, stage, conf = c.q, c.k + 1, res.confidence
+    up = c.d == 1
+    solid = conf in ("High", "Medium")
+
+    def depth():
+        if stage == 2:
+            return (q[1] - now) / (q[1] - q[0])
+        if stage == 4:
+            return (q[3] - now) / (q[3] - q[2])
+        return (q[7] - now) / (q[5] - q[6])        # stage 8 (C) vs the length of A
+
+    if up:
+        if stage in (2, 4, 8):
+            name = {2: "wave 2", 4: "wave 4", 8: "wave C"}[stage]
+            dp, zone = depth(), BUY_ZONE[stage]
+            if dp < zone:
+                return "Hold", f"{name} pullback only {dp:.0%} deep — buy zone starts at {zone:.1%}"
+            if stage == 2:
+                return "Buy", (f"late wave 2 ({dp:.0%} retracement) ahead of a potential wave 3 — "
+                               "unconfirmed count, keep the stop at the invalidation price")
+            if conf == "High":
+                return "Strong Buy", f"late {name} in the buy zone ({dp:.0%}) with a high-confidence count"
+            if solid:
+                return "Buy", f"late {name} in the buy zone ({dp:.0%})"
+            return "Hold", f"{name} in the buy zone but the count is low-confidence"
+        if stage == 3:
+            if solid and (now - q[2]) < (q[1] - q[0]):
+                return "Buy", "early wave 3 — still below the 1×W1 target"
+            return "Hold", "wave 3 already well underway — avoid chasing"
+        if stage == 5:
+            if res.maybe_ending and solid:
+                return "Sell", "wave 5 has reached its minimum target — the move is mature"
+            return "Hold", "wave 5 in progress — hold, don't add"
+        if stage in (6, 7):
+            if solid:
+                return "Sell", ("wave A — a correction has started" if stage == 6
+                                else "wave B rally inside a correction — a classic trap")
+            return "Hold", "correction under way, low-confidence count"
+        return "Hold", "wave 1 — too early to confirm a new up-move"
+
+    # Down-trend impulse (↓)
+    if stage == 5 and res.maybe_ending:
+        return "Hold", "down-move's wave 5 near its target — watch for a bottom, don't sell into it"
+    if stage in (1, 2, 3, 4, 5) and solid:
+        return "Sell", f"wave {stage} of a down-move"
+    if stage == 8 and solid:
+        return "Sell", "wave C rally inside a down-trend is ending"
+    return "Hold", "down-trend count is low-confidence or a counter-rally is under way"
+
+
 def _fill(res: WaveResult, c: _Count, alt: Optional[_Count], df: pd.DataFrame) -> WaveResult:
     d = c.d
     real = lambda v: float(d * v)          # normalized -> actual price
@@ -428,6 +496,7 @@ def _fill(res: WaveResult, c: _Count, alt: Optional[_Count], df: pd.DataFrame) -
     if res.confidence == "Low":
         note += " Low confidence: the legs don't match Fibonacci proportions better than chance."
     res.note = note
+    res.signal, res.signal_reason = _signal(c, res, now)
     if alt is not None:
         res.alternate = f"Wave {STAGE_OF[alt.k + 1]} {'↑' if alt.d == 1 else '↓'} (score {alt.score:.2f})"
     return res

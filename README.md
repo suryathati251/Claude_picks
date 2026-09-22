@@ -28,7 +28,9 @@ Open the deployed URL in your browser each morning — fresh prices on every pag
   **Wave invalid** columns on the watchlist: which leg of a 5-wave move (1–5, ↑/↓) or of the A-B-C
   correction each stock is in, how well the legs fit the textbook Fibonacci ratios (confidence
   calibrated on random-walk prices — only ~1 in 10 noise counts reaches High), the nearest Fibonacci
-  target ahead, and the price that would break the count. A **🌊 chart** expander under the table draws
+  target ahead, and the price that would break the count. A **Wave signal** column turns the count into
+  🟢🟢 Strong Buy / 🟢 Buy / ⚪ Hold / 🔴 Sell (buy late wave 2/4/C pullbacks of an up-move in their Fibonacci
+  buy zone; sell mature wave 5, A/B, and down-trend legs; Strong Buy needs a High-confidence count). A **🌊 chart** expander under the table draws
   the count, targets and invalidation line for any ticker; the Lookup tab shows the read too. Free
   Yahoo daily bars (2y), recounted once a day — **zero FMP quota**. Elliott counts are subjective:
   context, not a trade signal. Run `python fib_waves.py` to re-check the calibration.
