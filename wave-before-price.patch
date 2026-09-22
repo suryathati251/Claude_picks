@@ -1,0 +1,38 @@
+From dcee0ff5cc6f87fc383522048097bc4a764856fc Mon Sep 17 00:00:00 2001
+From: Surya <noreply@example.com>
+Date: Tue, 22 Sep 2026 15:52:09 +0000
+Subject: [PATCH] Show wave columns before Price
+
+---
+ app.py | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/app.py b/app.py
+index 4ad816f..152ad06 100644
+--- a/app.py
++++ b/app.py
+@@ -1158,6 +1158,10 @@ if nav == NAV_WATCH:
+             "Cov": f"{int(row['Cov'])}/{int(row['CovN'])}" if pd.notna(row["Cov"]) else "—",
+             "V": row["V"], "Q": row["Q"], "G": row["G"], "M": row["M"], "S": row["S"],
+             "Moat": row["Moat"],
++            "Wave": w_stage,
++            "Wave conf": w_conf,
++            "Next Fib": w_next,
++            "Wave invalid": w_inv,
+             "Price": fmt_price(row["Price"], row["Currency"]),
+             "Day %": row["Day %"],
+             "Earn Yld": row["Earnings Yld %"],
+@@ -1174,10 +1178,6 @@ if nav == NAV_WATCH:
+             "Insider": insider_display(insider_data.get(row["Ticker"]), row["52w Pos %"]),
+             "12-1m": row["Mom 12-1 %"],
+             "52w": row["52w Pos %"],
+-            "Wave": w_stage,
+-            "Wave conf": w_conf,
+-            "Next Fib": w_next,
+-            "Wave invalid": w_inv,
+             "Mkt Cap": row["Mkt Cap"],
+             "Target": target_str,
+             "Upside %": row["Upside %"],
+-- 
+2.43.0
+
